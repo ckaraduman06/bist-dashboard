@@ -14,7 +14,6 @@
 
 # Hücre 1 — Kurulum (sadece ilk seferinde çalıştır)
 import sys
-get_ipython().system('{sys.executable} -m pip install dash plotly pandas numpy scipy yfinance PyPortfolioOpt arch statsmodels -q')
 print('✅ Kurulum tamamlandı!')
 
 
@@ -31,6 +30,12 @@ warnings.filterwarnings('ignore')
 
 import dash
 from dash import dcc, html, Input, Output, State, dash_table, ALL
+import dash
+from dash import dcc, html
+# ... diğer importların ...
+
+app = dash.Dash(__name__)
+server = app.server
 import plotly.graph_objects as go
 
 # ════════════════════════════════════════════════════════

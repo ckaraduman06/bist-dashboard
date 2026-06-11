@@ -1,6 +1,0 @@
-dash
-pandas
-numpy
-plotly
-yfinance
-gunicorn

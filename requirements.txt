@@ -4,3 +4,6 @@ numpy
 plotly
 yfinance
 gunicorn
+scipy
+statsmodels
+arch

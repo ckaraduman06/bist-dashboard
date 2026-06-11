@@ -907,6 +907,6 @@ def tab_ic(t,figs):
     return html.Div()
 
 # ── Başlat ────────────────────────────────────────────────────
-print('✅ Platform hazır → http://localhost:8050')
-app.run(debug=False, port=8050, jupyter_mode='external')
+app = dash.Dash(__name__)
+server = app.server
 

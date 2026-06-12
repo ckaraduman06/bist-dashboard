@@ -1,42 +1,13 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# # BIST 100 — Bloomberg PORT Benzeri VaR Risk Analiz Platformu
-# ## Dash + Plotly + yfinance + GARCH + PyPortfolioOpt
-# 
-# **Adımlar:**
-# 1. Hücre 1'i çalıştır (kurulum)
-# 2. Hücre 2'yi çalıştır (platform başlar)
-# 3. Tarayıcıda `http://localhost:8050` adresini aç
-
-# In[ ]:
-
-
-# Hücre 1 — Kurulum (sadece ilk seferinde çalıştır)
-import sys
-print('✅ Kurulum tamamlandı!')
-
-
-# In[ ]:
-
-
-# Hücre 2 — Platform (çalıştır → http://localhost:8050 aç)
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 import yfinance as yf
 import warnings, json
-warnings.filterwarnings('ignore')
-
+import plotly.graph_objects as go
 import dash
 from dash import dcc, html, Input, Output, State, dash_table, ALL
-import dash
-from dash import dcc, html
-# ... diğer importların ...
 
-app = dash.Dash(__name__)
-server = app.server
-import plotly.graph_objects as go
+warnings.filterwarnings('ignore')
 
 # ════════════════════════════════════════════════════════
 # BIST 100 — TAM LİSTE
@@ -239,7 +210,6 @@ FALLBACK = {
 _cache = {}
 
 def hisse_verisi_cek(kod, donem='1y'):
-    # Cache kaldırıldı — her seferinde taze veri
     try:
         t  = yf.Ticker(f'{kod}.IS')
         df = t.history(period=donem, auto_adjust=True)
@@ -333,7 +303,6 @@ def hesapla(hisseler, w_raw, pv, guven, hz, mc_n, donem, opt_metot):
     # GARCH
     garch = {}
     ret0 = meta[hisseler[0]].get('returns', [])
-    # Eğer gerçek veri yoksa fallback sigma ile sentetik seri oluştur
     if not ret0 or len(ret0) < 60:
         np.random.seed(42)
         sig0 = meta[hisseler[0]].get('sigma', 0.02)
@@ -398,7 +367,7 @@ def hesapla(hisseler, w_raw, pv, guven, hz, mc_n, donem, opt_metot):
     }
 
 # ════════════════════════════════════════════════════════
-# RENKLER
+# RENKLER VE CSS
 # ════════════════════════════════════════════════════════
 BG=     '#0a0e1a'; CARD='#131c2e'; PANEL='#111827'
 ACCENT= '#63b3ed'; DANGER='#fc8181'; SUCCESS='#68d391'
@@ -426,9 +395,6 @@ def krt(lbl,val,sub,color,cls):
                      html.Div(val,className='metric-value',style={'color':color}),
                      html.Div(sub,className='metric-sub')],className=f'metric-card {cls}')
 
-# ════════════════════════════════════════════════════════
-# CSS (inline)
-# ════════════════════════════════════════════════════════
 CSS = '''
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 :root{--bg:#0a0e1a;--bg2:#0f1724;--bg3:#1a2235;--card:#131c2e;--panel:#111827;
@@ -528,10 +494,9 @@ body,.app-wrap{background:var(--bg)!important;color:var(--text);font-family:var(
 '''
 
 # ════════════════════════════════════════════════════════
-# DASH UYGULAMASI
+# DASH UYGULAMASI BAŞLATMA
 # ════════════════════════════════════════════════════════
-app = dash.Dash(__name__, title='BIST 100 VaR Platform',
-                suppress_callback_exceptions=True)
+app = dash.Dash(__name__, title='BIST 100 VaR Platform', suppress_callback_exceptions=True)
 server = app.server
 
 app.index_string = '''
@@ -548,7 +513,7 @@ app.layout = html.Div([
     html.Div([html.Div([
         html.Div([html.Div('VaR',className='logo-icon'),
                   html.Div([html.Div('BIST 100 · Portfolio Risk Analytics',className='logo-text'),
-                             html.Div('Bloomberg PORT · yfinance · GARCH · PyPortfolioOpt',className='logo-sub')])],className='logo'),
+                            html.Div('Bloomberg PORT · yfinance · GARCH · PyPortfolioOpt',className='logo-sub')])],className='logo'),
         html.Div([html.Div(className='live-dot'),html.Div('15dk Gecikmeli',className='live-txt'),
                   html.Div('Akademik Proje',className='badge')],className='header-right'),
     ],className='header-inner')],className='header'),
@@ -563,7 +528,7 @@ app.layout = html.Div([
                                           placeholder='Hisse ara... THYAO, GARAN...',className='search-input'),
                                 html.Div([html.Button('Tümü',id='p-tumu',className='pill active',n_clicks=0,**{'data-sector':'Tümü'})]+
                                          [html.Button(s,className='pill',n_clicks=0,
-                                                       id=f'p-{i}',**{'data-sector':s}) for i,s in enumerate(SEKTORLER)],
+                                                      id=f'p-{i}',**{'data-sector':s}) for i,s in enumerate(SEKTORLER)],
                                          className='pills',id='pill-wrap'),
                                 html.Div('',id='h-cnt',className='stock-badge'),
                                 html.Div(id='h-list',className='stock-list'),
@@ -595,7 +560,6 @@ app.layout = html.Div([
                           html.Div([html.Div('Optimizasyon',className='param-label'),
                                     dcc.Dropdown(id='opt',options=[{'label':'Maks Sharpe','value':'sharpe'},{'label':'Min Volatilite','value':'minvol'}],
                                                  value='sharpe',clearable=False,className='dark-dd')],className='param-row'),
-                          # Otomatik analiz — buton kaldırıldı
                       ],className='panel-body')],className='panel'),
         ],className='sidebar'),
 
@@ -667,7 +631,6 @@ def tog(clicks,ids,sel,ws):
     else:
         if len(sel)>=15: return sel,ws
         sel.append(k)
-    # Sadece yeni eklenen hisseye eşit ağırlık ver
     eq = round(100/len(sel), 1) if sel else 0
     for x in sel:
         if x not in ws:
@@ -804,12 +767,6 @@ def analiz(sel,ws,pv,ci,hz,mc_n,donem,opt_metot):
         f7.add_annotation(text='Optimizasyon için yfinance verisi gerekli',x=0.5,y=0.5,showarrow=False,font=dict(color=MUTED,size=13))
         f7.update_layout(**PL,title='Portföy Optimizasyonu')
 
-    def sc(title,val,color,extra=''):
-        return html.Div([html.Div(title,className='scenario-title',style={'color':color}),
-                         html.Div(ftl(val),className='scenario-val',style={'color':color}),
-                         html.Div(extra,style={'fontSize':'10px','color':MUTED,'marginTop':'3px','fontFamily':'IBM Plex Mono'})],
-                        className='scenario-card')
-
     return html.Div([
         # Metrik kartlar
         html.Div([
@@ -906,7 +863,5 @@ def tab_ic(t,figs):
                      className='formula-box')])
     return html.Div()
 
-# ── Başlat ────────────────────────────────────────────────────
-app = dash.Dash(__name__)
-server = app.server
-
+if __name__ == '__main__':
+    app.run_server(debug=False)

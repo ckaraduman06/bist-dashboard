@@ -680,8 +680,10 @@ def update_list(q, sector, selected):
                 html.Div(info[0], className='stock-name'),
             ]),
             html.Div([
-                html.Div(f"{'+' if chg >= 0 else ''}{chg:.2f}%",
+                # Sayıyı yazdıran formülü sildik, yerine sadece '' (boşluk) koyduk
+                html.Div('',
                          style={'color': chg_color, 'fontSize': '10px'}),
+                
                 html.Div('✓' if is_sel else '',
                          style={'color': 'var(--amber)', 'fontWeight': 'bold',
                                 'marginLeft': '6px'}),

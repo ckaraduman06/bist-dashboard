@@ -1,867 +1,1147 @@
+# ════════════════════════════════════════════════════════════════════
+# BIST 100 VaR Risk Analytics Platform — Production (Render Ready)
+# BAL620 · Canbolat Karaduman
+# Düzeltmeler:
+#   1. Analiz "Çalıştır" butonuyla tetikleniyor (gereksiz yeniden hesaplama yok)
+#   2. In-memory veri cache aktif
+#   3. VaR formülü düzeltildi: kayıp = W*(z*σ*√T - μ*T)
+#   4. CVaR formülü düzeltildi: W*σ*√T*φ(z)/(1-α) - W*μ*T
+#   5. Sharpe risk-free rate günlük bazda doğru uygulanıyor
+#   6. Beta hesabı BIST100 endeksiyle fetch_data içinde yapılıyor
+#   7. GARCH tarih hizalaması düzeltildi
+#   8. Modal ctx.states hatası düzeltildi
+#   9. Render deploy: host=0.0.0.0, server expose, gunicorn uyumlu
+# ════════════════════════════════════════════════════════════════════
+
+import dash
+from dash import dcc, html, Input, Output, State, dash_table, ALL, ctx, no_update
+import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 import yfinance as yf
-import warnings, json
-import plotly.graph_objects as go
-import dash
-from dash import dcc, html, Input, Output, State, dash_table, ALL
+import warnings
+import json
 
 warnings.filterwarnings('ignore')
 
 # ════════════════════════════════════════════════════════
-# BIST 100 — TAM LİSTE
+# 1. VERİ SETİ
 # ════════════════════════════════════════════════════════
 BIST100 = {
-    'AKBNK':('Akbank','Banka'),
-    'GARAN':('Garanti BBVA','Banka'),
-    'HALKB':('Halkbank','Banka'),
-    'ISCTR':('İş Bankası (C)','Banka'),
-    'VAKBN':('Vakıfbank','Banka'),
-    'YKBNK':('Yapı Kredi Bankası','Banka'),
-    'TSKB':('TSKB','Banka'),
-    'ALBRK':('Albaraka Türk','Banka'),
-    'QNBFB':('QNB Finansbank','Banka'),
-    'KLNMA':('Kalkınma Yatırım Bankası','Banka'),
-    'KCHOL':('Koç Holding','Holding'),
-    'SAHOL':('Sabancı Holding','Holding'),
-    'DOHOL':('Doğan Holding','Holding'),
-    'MGROS':('Migros Ticaret','Holding'),
-    'MPARK':('MLP Sağlık','Holding'),
-    'GLYHO':('Global Yatırım Holding','Holding'),
-    'ISMEN':('İş Yatırım','Holding'),
-    'EREGL':('Ereğli Demir Çelik','Sanayi'),
-    'KRDMD':('Kardemir (D)','Sanayi'),
-    'TTRAK':('Türk Traktör','Sanayi'),
-    'ARCLK':('Arçelik','Sanayi'),
-    'VESTL':('Vestel Elektronik','Sanayi'),
-    'VESBE':('Vestel Beyaz Eşya','Sanayi'),
-    'ULKER':('Ülker Bisküvi','Sanayi'),
-    'BRSAN':('Borusan Mannesmann','Sanayi'),
-    'TRKCM':('Trakya Cam','Sanayi'),
-    'SISE':('Şişe Cam','Sanayi'),
-    'PRKAB':('Türk Prysmian Kablo','Sanayi'),
-    'GUBRF':('Gübre Fabrikaları','Sanayi'),
-    'ISDMR':('İskenderun Demir Çelik','Sanayi'),
-    'ADEL':('Adel Kalemcilik','Sanayi'),
-    'ERBOS':('Erbosan','Sanayi'),
-    'SARKY':('Sarkuysan','Sanayi'),
-    'TUPRS':('Tüpraş','Enerji'),
-    'AYGAZ':('Aygaz','Enerji'),
-    'AKSEN':('Aksa Enerji','Enerji'),
-    'ZOREN':('Zorlu Enerji','Enerji'),
-    'ENKAI':('Enka İnşaat','Enerji'),
-    'ODAS':('Odaş Elektrik','Enerji'),
-    'OSEN':('Osmanlı Elektrik','Enerji'),
-    'THYAO':('Türk Hava Yolları','Havacılık'),
-    'PGSUS':('Pegasus Havayolları','Havacılık'),
-    'TAVHL':('TAV Havalimanları','Havacılık'),
-    'CLEBI':('Çelebi Hava Servisi','Havacılık'),
-    'BIMAS':('BİM Mağazalar','Perakende'),
-    'SOKM':('ŞOK Marketler','Perakende'),
-    'MAVI':('Mavi Giyim','Perakende'),
-    'HEPSI':('Hepsiburada','Perakende'),
-    'CRFSA':('CarrefourSA','Perakende'),
-    'ASELS':('Aselsan','Savunma'),
-    'LOGO':('Logo Yazılım','Teknoloji'),
-    'INDES':('İndeks Bilgisayar','Teknoloji'),
-    'KONTR':('Kontrolmatik','Teknoloji'),
-    'KAREL':('Karel Elektronik','Teknoloji'),
-    'NETAS':('Netaş Telekomünikasyon','Teknoloji'),
-    'TCELL':('Turkcell','Telekomünikasyon'),
-    'TTKOM':('Türk Telekom','Telekomünikasyon'),
-    'TOASO':('Tofaş Oto Fabrikası','Otomotiv'),
-    'FROTO':('Ford Otosan','Otomotiv'),
-    'DOAS':('Doğuş Otomotiv','Otomotiv'),
-    'ASUZU':('Anadolu Isuzu','Otomotiv'),
-    'KARSN':('Karsan Otomotiv','Otomotiv'),
-    'ANSGR':('Anadolu Sigorta','Sigorta'),
-    'AKGRT':('Aksigorta','Sigorta'),
-    'RAYSG':('Ray Sigorta','Sigorta'),
-    'YKSGR':('Yapı Kredi Sigorta','Sigorta'),
-    'ISGYO':('İş GYO','GYO'),
-    'EKGYO':('Emlak Konut GYO','GYO'),
-    'TOILE':('Torunlar GYO','GYO'),
-    'ALGYO':('Alarko GYO','GYO'),
-    'OZRGY':('Özderici GYO','GYO'),
-    'ECILC':('Eczacıbaşı İlaç','Kimya'),
-    'PETKM':('Petkim Petrokimya','Kimya'),
-    'SODA':('Soda Sanayii','Kimya'),
-    'ALKIM':('Alkim Kimya','Kimya'),
-    'DEVA':('Deva Holding','Kimya'),
-    'SELEC':('Selçuk Ecza','Kimya'),
-    'AEFES':('Anadolu Efes','Gıda'),
-    'CCOLA':('Coca-Cola İçecek','Gıda'),
-    'TATGD':('Tat Gıda','Gıda'),
-    'BANVT':('Banvit','Gıda'),
-    'KERVT':('Kerevitaş Gıda','Gıda'),
-    'AKCNS':('Akçansa Çimento','İnşaat'),
-    'BOLUC':('Bolu Çimento','İnşaat'),
-    'CIMSA':('Çimsa Çimento','İnşaat'),
-    'TKFEN':('Tekfen Holding','İnşaat'),
-    'OYAKC':('Oyak Çimento','İnşaat'),
-    'GOLTS':('Göltaş Çimento','İnşaat'),
-    'ADANA':('Adana Çimento (A)','İnşaat'),
-    'BUCIM':('Bursa Çimento','İnşaat'),
-    'MRDIN':('Mardin Çimento','İnşaat'),
-    'PRKME':('Park Elektrik','Madencilik'),
-    'KRDMA':('Kardemir (A)','Madencilik'),
+    'AKBNK': ('Akbank', 'Banka'), 'GARAN': ('Garanti BBVA', 'Banka'),
+    'HALKB': ('Halkbank', 'Banka'), 'ISCTR': ('İş Bankası (C)', 'Banka'),
+    'VAKBN': ('Vakıfbank', 'Banka'), 'YKBNK': ('Yapı Kredi Bankası', 'Banka'),
+    'TSKB': ('TSKB', 'Banka'), 'ALBRK': ('Albaraka Türk', 'Banka'),
+    'QNBFB': ('QNB Finansbank', 'Banka'), 'KLNMA': ('Kalkınma Yatırım Bankası', 'Banka'),
+    'KCHOL': ('Koç Holding', 'Holding'), 'SAHOL': ('Sabancı Holding', 'Holding'),
+    'DOHOL': ('Doğan Holding', 'Holding'), 'GLYHO': ('Global Yatırım Holding', 'Holding'),
+    'ISMEN': ('İş Yatırım', 'Aracı Kurum'),
+    'EREGL': ('Ereğli Demir Çelik', 'Sanayi'), 'KRDMD': ('Kardemir (D)', 'Sanayi'),
+    'ARCLK': ('Arçelik', 'Sanayi'), 'VESTL': ('Vestel Elektronik', 'Sanayi'),
+    'VESBE': ('Vestel Beyaz Eşya', 'Sanayi'), 'BRSAN': ('Borusan Mannesmann', 'Sanayi'),
+    'SISE': ('Şişe Cam', 'Sanayi'), 'TRKCM': ('Trakya Cam', 'Sanayi'),
+    'ISDMR': ('İskenderun Demir Çelik', 'Sanayi'), 'ADEL': ('Adel Kalemcilik', 'Sanayi'),
+    'ERBOS': ('Erbosan', 'Sanayi'), 'SARKY': ('Sarkuysan', 'Sanayi'),
+    'TTRAK': ('Türk Traktör', 'Otomotiv'), 'TOASO': ('Tofaş', 'Otomotiv'),
+    'FROTO': ('Ford Otosan', 'Otomotiv'), 'DOAS': ('Doğuş Otomotiv', 'Otomotiv'),
+    'ASUZU': ('Anadolu Isuzu', 'Otomotiv'), 'KARSN': ('Karsan Otomotiv', 'Otomotiv'),
+    'TUPRS': ('Tüpraş', 'Enerji'), 'AYGAZ': ('Aygaz', 'Enerji'),
+    'AKSEN': ('Aksa Enerji', 'Enerji'), 'ZOREN': ('Zorlu Enerji', 'Enerji'),
+    'ODAS': ('Odaş Elektrik', 'Enerji'),
+    'ENKAI': ('Enka İnşaat', 'İnşaat'), 'AKCNS': ('Akçansa Çimento', 'İnşaat'),
+    'CIMSA': ('Çimsa Çimento', 'İnşaat'), 'TKFEN': ('Tekfen Holding', 'İnşaat'),
+    'OYAKC': ('Oyak Çimento', 'İnşaat'), 'GOLTS': ('Göltaş Çimento', 'İnşaat'),
+    'THYAO': ('Türk Hava Yolları', 'Havacılık'), 'PGSUS': ('Pegasus Havayolları', 'Havacılık'),
+    'TAVHL': ('TAV Havalimanları', 'Havacılık'), 'CLEBI': ('Çelebi Hava Servisi', 'Havacılık'),
+    'BIMAS': ('BİM Mağazalar', 'Perakende'), 'SOKM': ('ŞOK Marketler', 'Perakende'),
+    'MAVI': ('Mavi Giyim', 'Perakende'), 'MGROS': ('Migros Ticaret', 'Perakende'),
+    'ASELS': ('Aselsan', 'Savunma'),
+    'LOGO': ('Logo Yazılım', 'Teknoloji'), 'INDES': ('İndeks Bilgisayar', 'Teknoloji'),
+    'KONTR': ('Kontrolmatik', 'Teknoloji'), 'KAREL': ('Karel Elektronik', 'Teknoloji'),
+    'NETAS': ('Netaş Telekomünikasyon', 'Teknoloji'),
+    'TCELL': ('Turkcell', 'Telekom'), 'TTKOM': ('Türk Telekom', 'Telekom'),
+    'ANSGR': ('Anadolu Sigorta', 'Sigorta'), 'AKGRT': ('Aksigorta', 'Sigorta'),
+    'RAYSG': ('Ray Sigorta', 'Sigorta'),
+    'ISGYO': ('İş GYO', 'GYO'), 'EKGYO': ('Emlak Konut GYO', 'GYO'),
+    'ECILC': ('Eczacıbaşı İlaç', 'Kimya'), 'PETKM': ('Petkim Petrokimya', 'Kimya'),
+    'GUBRF': ('Gübre Fabrikaları', 'Kimya'), 'DEVA': ('Deva Holding', 'Kimya'),
+    'SELEC': ('Selçuk Ecza', 'Kimya'),
+    'AEFES': ('Anadolu Efes', 'Gıda'), 'CCOLA': ('Coca-Cola İçecek', 'Gıda'),
+    'TATGD': ('Tat Gıda', 'Gıda'), 'BANVT': ('Banvit', 'Gıda'),
+    'ULKER': ('Ülker Bisküvi', 'Gıda'),
+    'MPARK': ('MLP Sağlık', 'Sağlık'),
+    'PRKME': ('Park Elektrik', 'Madencilik'), 'KRDMA': ('Kardemir (A)', 'Madencilik'),
 }
 
 FALLBACK = {
-    'AKBNK':{'mu':0.00052,'sigma':0.0215,'beta':1.02,'price':67.85,'change':-0.32},
-    'GARAN':{'mu':0.00054,'sigma':0.0225,'beta':1.08,'price':89.40,'change':1.23},
-    'HALKB':{'mu':0.00031,'sigma':0.0268,'beta':1.15,'price':28.90,'change':-1.24},
-    'ISCTR':{'mu':0.00044,'sigma':0.0198,'beta':0.98,'price':56.20,'change':0.54},
-    'VAKBN':{'mu':0.00041,'sigma':0.0245,'beta':1.09,'price':33.25,'change':0.90},
-    'YKBNK':{'mu':0.00043,'sigma':0.0232,'beta':1.05,'price':43.10,'change':1.78},
-    'TSKB':{'mu':0.00038,'sigma':0.0210,'beta':0.92,'price':12.85,'change':0.47},
-    'ALBRK':{'mu':0.00028,'sigma':0.0255,'beta':1.10,'price':8.42,'change':-0.60},
-    'QNBFB':{'mu':0.00035,'sigma':0.0222,'beta':1.01,'price':14.18,'change':0.21},
-    'KLNMA':{'mu':0.00035,'sigma':0.0245,'beta':1.05,'price':18.42,'change':-0.11},
-    'KCHOL':{'mu':0.00052,'sigma':0.0178,'beta':0.85,'price':198.40,'change':0.82},
-    'SAHOL':{'mu':0.00050,'sigma':0.0185,'beta':0.88,'price':67.20,'change':0.36},
-    'DOHOL':{'mu':0.00042,'sigma':0.0205,'beta':0.95,'price':24.60,'change':1.10},
-    'MGROS':{'mu':0.00048,'sigma':0.0205,'beta':0.89,'price':234.60,'change':1.45},
-    'MPARK':{'mu':0.00055,'sigma':0.0225,'beta':0.98,'price':102.40,'change':2.15},
-    'GLYHO':{'mu':0.00038,'sigma':0.0248,'beta':1.08,'price':34.20,'change':-0.85},
-    'ISMEN':{'mu':0.00040,'sigma':0.0230,'beta':1.00,'price':28.60,'change':0.42},
-    'EREGL':{'mu':0.00050,'sigma':0.0210,'beta':0.92,'price':46.54,'change':-0.45},
-    'KRDMD':{'mu':0.00038,'sigma':0.0248,'beta':1.08,'price':18.72,'change':0.64},
-    'TTRAK':{'mu':0.00060,'sigma':0.0195,'beta':0.87,'price':428.60,'change':1.20},
-    'ARCLK':{'mu':0.00048,'sigma':0.0215,'beta':0.96,'price':148.40,'change':-0.31},
-    'VESTL':{'mu':0.00042,'sigma':0.0252,'beta':1.10,'price':38.90,'change':0.77},
-    'VESBE':{'mu':0.00045,'sigma':0.0238,'beta':1.05,'price':74.30,'change':-1.02},
-    'ULKER':{'mu':0.00044,'sigma':0.0198,'beta':0.85,'price':92.30,'change':0.22},
-    'BRSAN':{'mu':0.00042,'sigma':0.0225,'beta':0.95,'price':88.50,'change':-0.44},
-    'TRKCM':{'mu':0.00046,'sigma':0.0208,'beta':0.92,'price':58.70,'change':0.65},
-    'SISE':{'mu':0.00049,'sigma':0.0200,'beta':0.90,'price':62.40,'change':-0.18},
-    'PRKAB':{'mu':0.00055,'sigma':0.0228,'beta':1.00,'price':124.20,'change':0.65},
-    'GUBRF':{'mu':0.00040,'sigma':0.0230,'beta':0.98,'price':54.20,'change':1.45},
-    'ISDMR':{'mu':0.00040,'sigma':0.0248,'beta':1.08,'price':24.80,'change':-0.44},
-    'ADEL':{'mu':0.00048,'sigma':0.0228,'beta':0.98,'price':84.60,'change':0.46},
-    'ERBOS':{'mu':0.00044,'sigma':0.0238,'beta':1.02,'price':48.20,'change':0.42},
-    'SARKY':{'mu':0.00046,'sigma':0.0232,'beta':1.00,'price':74.40,'change':-0.27},
-    'TUPRS':{'mu':0.00062,'sigma':0.0195,'beta':0.87,'price':180.20,'change':0.67},
-    'AYGAZ':{'mu':0.00040,'sigma':0.0180,'beta':0.78,'price':92.60,'change':0.33},
-    'AKSEN':{'mu':0.00048,'sigma':0.0228,'beta':1.02,'price':43.80,'change':1.54},
-    'ZOREN':{'mu':0.00040,'sigma':0.0252,'beta':1.12,'price':18.94,'change':-0.73},
-    'ENKAI':{'mu':0.00044,'sigma':0.0188,'beta':0.82,'price':32.76,'change':0.12},
-    'ODAS':{'mu':0.00038,'sigma':0.0265,'beta':1.18,'price':31.25,'change':2.38},
-    'OSEN':{'mu':0.00040,'sigma':0.0260,'beta':1.15,'price':21.80,'change':2.14},
-    'THYAO':{'mu':0.00082,'sigma':0.0285,'beta':1.32,'price':298.60,'change':2.14},
-    'PGSUS':{'mu':0.00065,'sigma':0.0312,'beta':1.18,'price':521.40,'change':-0.85},
-    'TAVHL':{'mu':0.00058,'sigma':0.0258,'beta':1.14,'price':248.60,'change':1.64},
-    'CLEBI':{'mu':0.00055,'sigma':0.0268,'beta':1.18,'price':183.20,'change':1.22},
-    'BIMAS':{'mu':0.00042,'sigma':0.0168,'beta':0.72,'price':389.40,'change':0.22},
-    'SOKM':{'mu':0.00040,'sigma':0.0222,'beta':0.94,'price':78.30,'change':-0.68},
-    'MAVI':{'mu':0.00058,'sigma':0.0245,'beta':1.06,'price':184.60,'change':1.35},
-    'HEPSI':{'mu':0.00070,'sigma':0.0348,'beta':1.48,'price':62.40,'change':3.87},
-    'CRFSA':{'mu':0.00035,'sigma':0.0235,'beta':0.98,'price':34.82,'change':-0.45},
-    'ASELS':{'mu':0.00065,'sigma':0.0248,'beta':1.12,'price':83.45,'change':3.21},
-    'LOGO':{'mu':0.00072,'sigma':0.0295,'beta':1.22,'price':142.80,'change':-1.87},
-    'INDES':{'mu':0.00060,'sigma':0.0278,'beta':1.20,'price':286.40,'change':1.14},
-    'KONTR':{'mu':0.00065,'sigma':0.0288,'beta':1.24,'price':74.60,'change':1.87},
-    'KAREL':{'mu':0.00055,'sigma':0.0305,'beta':1.30,'price':98.60,'change':-1.44},
-    'NETAS':{'mu':0.00052,'sigma':0.0315,'beta':1.28,'price':94.60,'change':0.95},
-    'TCELL':{'mu':0.00048,'sigma':0.0185,'beta':0.80,'price':82.40,'change':0.58},
-    'TTKOM':{'mu':0.00040,'sigma':0.0175,'beta':0.75,'price':42.20,'change':0.14},
-    'TOASO':{'mu':0.00044,'sigma':0.0215,'beta':0.96,'price':156.20,'change':-0.54},
-    'FROTO':{'mu':0.00062,'sigma':0.0225,'beta':1.01,'price':942.50,'change':1.12},
-    'DOAS':{'mu':0.00050,'sigma':0.0220,'beta':0.97,'price':148.80,'change':0.83},
-    'ASUZU':{'mu':0.00052,'sigma':0.0235,'beta':1.03,'price':164.80,'change':0.92},
-    'KARSN':{'mu':0.00042,'sigma':0.0248,'beta':1.08,'price':44.20,'change':1.42},
-    'ANSGR':{'mu':0.00042,'sigma':0.0215,'beta':0.90,'price':52.40,'change':0.48},
-    'AKGRT':{'mu':0.00040,'sigma':0.0205,'beta':0.88,'price':38.60,'change':-0.26},
-    'RAYSG':{'mu':0.00038,'sigma':0.0228,'beta':0.98,'price':14.52,'change':0.69},
-    'YKSGR':{'mu':0.00041,'sigma':0.0210,'beta':0.91,'price':22.40,'change':0.14},
-    'ISGYO':{'mu':0.00035,'sigma':0.0232,'beta':0.98,'price':14.38,'change':0.84},
-    'EKGYO':{'mu':0.00038,'sigma':0.0242,'beta':1.04,'price':12.64,'change':1.52},
-    'TOILE':{'mu':0.00040,'sigma':0.0250,'beta':1.08,'price':28.90,'change':-0.69},
-    'ALGYO':{'mu':0.00032,'sigma':0.0255,'beta':1.12,'price':16.72,'change':0.31},
-    'OZRGY':{'mu':0.00028,'sigma':0.0272,'beta':1.18,'price':8.94,'change':-0.45},
-    'ECILC':{'mu':0.00048,'sigma':0.0218,'beta':0.94,'price':64.80,'change':0.72},
-    'PETKM':{'mu':0.00048,'sigma':0.0222,'beta':0.98,'price':34.60,'change':0.74},
-    'SODA':{'mu':0.00052,'sigma':0.0210,'beta':0.92,'price':62.80,'change':0.58},
-    'ALKIM':{'mu':0.00050,'sigma':0.0220,'beta':0.90,'price':78.60,'change':0.87},
-    'DEVA':{'mu':0.00044,'sigma':0.0235,'beta':1.02,'price':38.20,'change':-0.52},
-    'SELEC':{'mu':0.00040,'sigma':0.0225,'beta':0.96,'price':52.60,'change':0.34},
-    'AEFES':{'mu':0.00050,'sigma':0.0192,'beta':0.85,'price':128.60,'change':0.44},
-    'CCOLA':{'mu':0.00055,'sigma':0.0185,'beta':0.80,'price':194.80,'change':0.92},
-    'TATGD':{'mu':0.00042,'sigma':0.0215,'beta':0.93,'price':42.80,'change':-0.37},
-    'BANVT':{'mu':0.00038,'sigma':0.0235,'beta':1.02,'price':62.40,'change':1.18},
-    'KERVT':{'mu':0.00042,'sigma':0.0238,'beta':1.04,'price':38.40,'change':0.63},
-    'AKCNS':{'mu':0.00048,'sigma':0.0205,'beta':0.90,'price':128.40,'change':0.54},
-    'BOLUC':{'mu':0.00040,'sigma':0.0218,'beta':0.95,'price':62.80,'change':-0.23},
-    'CIMSA':{'mu':0.00045,'sigma':0.0210,'beta':0.92,'price':94.60,'change':0.88},
-    'TKFEN':{'mu':0.00050,'sigma':0.0215,'beta':0.95,'price':98.40,'change':-0.28},
-    'OYAKC':{'mu':0.00045,'sigma':0.0205,'beta':0.90,'price':54.80,'change':0.28},
-    'GOLTS':{'mu':0.00038,'sigma':0.0230,'beta':1.00,'price':32.60,'change':0.56},
-    'ADANA':{'mu':0.00038,'sigma':0.0225,'beta':0.98,'price':52.40,'change':0.35},
-    'BUCIM':{'mu':0.00038,'sigma':0.0220,'beta':0.96,'price':58.20,'change':0.18},
-    'MRDIN':{'mu':0.00036,'sigma':0.0228,'beta':0.98,'price':44.80,'change':0.34},
-    'PRKME':{'mu':0.00045,'sigma':0.0248,'beta':1.08,'price':34.60,'change':0.73},
-    'KRDMA':{'mu':0.00036,'sigma':0.0252,'beta':1.10,'price':16.80,'change':0.60},
+    'AKBNK': {'mu': 0.00052, 'sigma': 0.0215, 'beta': 1.02, 'price': 67.85, 'change': -0.32},
+    'GARAN': {'mu': 0.00054, 'sigma': 0.0225, 'beta': 1.08, 'price': 89.40, 'change': 1.23},
+    'HALKB': {'mu': 0.00031, 'sigma': 0.0268, 'beta': 1.15, 'price': 28.90, 'change': -1.24},
+    'ISCTR': {'mu': 0.00044, 'sigma': 0.0198, 'beta': 0.98, 'price': 56.20, 'change': 0.54},
+    'VAKBN': {'mu': 0.00041, 'sigma': 0.0245, 'beta': 1.09, 'price': 33.25, 'change': 0.90},
+    'YKBNK': {'mu': 0.00043, 'sigma': 0.0232, 'beta': 1.05, 'price': 43.10, 'change': 1.78},
+    'TSKB':  {'mu': 0.00038, 'sigma': 0.0210, 'beta': 0.92, 'price': 12.85, 'change': 0.47},
+    'ALBRK': {'mu': 0.00028, 'sigma': 0.0255, 'beta': 1.10, 'price': 8.42,  'change': -0.60},
+    'QNBFB': {'mu': 0.00035, 'sigma': 0.0222, 'beta': 1.01, 'price': 14.18, 'change': 0.21},
+    'KLNMA': {'mu': 0.00035, 'sigma': 0.0245, 'beta': 1.05, 'price': 18.42, 'change': -0.11},
+    'KCHOL': {'mu': 0.00052, 'sigma': 0.0178, 'beta': 0.85, 'price': 198.40, 'change': 0.82},
+    'SAHOL': {'mu': 0.00050, 'sigma': 0.0185, 'beta': 0.88, 'price': 67.20, 'change': 0.36},
+    'DOHOL': {'mu': 0.00042, 'sigma': 0.0205, 'beta': 0.95, 'price': 24.60, 'change': 1.10},
+    'GLYHO': {'mu': 0.00038, 'sigma': 0.0248, 'beta': 1.08, 'price': 34.20, 'change': -0.85},
+    'ISMEN': {'mu': 0.00040, 'sigma': 0.0230, 'beta': 1.00, 'price': 28.60, 'change': 0.42},
+    'EREGL': {'mu': 0.00050, 'sigma': 0.0210, 'beta': 0.92, 'price': 46.54, 'change': -0.45},
+    'KRDMD': {'mu': 0.00038, 'sigma': 0.0248, 'beta': 1.08, 'price': 18.72, 'change': 0.64},
+    'ARCLK': {'mu': 0.00048, 'sigma': 0.0215, 'beta': 0.96, 'price': 148.40, 'change': -0.31},
+    'VESTL': {'mu': 0.00042, 'sigma': 0.0252, 'beta': 1.10, 'price': 38.90, 'change': 0.77},
+    'VESBE': {'mu': 0.00045, 'sigma': 0.0238, 'beta': 1.05, 'price': 74.30, 'change': -1.02},
+    'BRSAN': {'mu': 0.00042, 'sigma': 0.0225, 'beta': 0.95, 'price': 88.50, 'change': -0.44},
+    'SISE':  {'mu': 0.00049, 'sigma': 0.0200, 'beta': 0.90, 'price': 62.40, 'change': -0.18},
+    'TRKCM': {'mu': 0.00046, 'sigma': 0.0208, 'beta': 0.92, 'price': 58.70, 'change': 0.65},
+    'ISDMR': {'mu': 0.00040, 'sigma': 0.0248, 'beta': 1.08, 'price': 24.80, 'change': -0.44},
+    'ADEL':  {'mu': 0.00048, 'sigma': 0.0228, 'beta': 0.98, 'price': 84.60, 'change': 0.46},
+    'ERBOS': {'mu': 0.00044, 'sigma': 0.0238, 'beta': 1.02, 'price': 48.20, 'change': 0.42},
+    'SARKY': {'mu': 0.00046, 'sigma': 0.0232, 'beta': 1.00, 'price': 74.40, 'change': -0.27},
+    'TTRAK': {'mu': 0.00060, 'sigma': 0.0195, 'beta': 0.87, 'price': 428.60, 'change': 1.20},
+    'TOASO': {'mu': 0.00044, 'sigma': 0.0215, 'beta': 0.96, 'price': 156.20, 'change': -0.54},
+    'FROTO': {'mu': 0.00062, 'sigma': 0.0225, 'beta': 1.01, 'price': 942.50, 'change': 1.12},
+    'DOAS':  {'mu': 0.00050, 'sigma': 0.0220, 'beta': 0.97, 'price': 148.80, 'change': 0.83},
+    'ASUZU': {'mu': 0.00052, 'sigma': 0.0235, 'beta': 1.03, 'price': 164.80, 'change': 0.92},
+    'KARSN': {'mu': 0.00042, 'sigma': 0.0248, 'beta': 1.08, 'price': 44.20,  'change': 1.42},
+    'TUPRS': {'mu': 0.00062, 'sigma': 0.0195, 'beta': 0.87, 'price': 180.20, 'change': 0.67},
+    'AYGAZ': {'mu': 0.00040, 'sigma': 0.0180, 'beta': 0.78, 'price': 92.60,  'change': 0.33},
+    'AKSEN': {'mu': 0.00048, 'sigma': 0.0228, 'beta': 1.02, 'price': 43.80,  'change': 1.54},
+    'ZOREN': {'mu': 0.00040, 'sigma': 0.0252, 'beta': 1.12, 'price': 18.94,  'change': -0.73},
+    'ODAS':  {'mu': 0.00038, 'sigma': 0.0265, 'beta': 1.18, 'price': 31.25,  'change': 2.38},
+    'ENKAI': {'mu': 0.00044, 'sigma': 0.0188, 'beta': 0.82, 'price': 32.76,  'change': 0.12},
+    'AKCNS': {'mu': 0.00048, 'sigma': 0.0205, 'beta': 0.90, 'price': 128.40, 'change': 0.54},
+    'CIMSA': {'mu': 0.00045, 'sigma': 0.0210, 'beta': 0.92, 'price': 94.60,  'change': 0.88},
+    'TKFEN': {'mu': 0.00050, 'sigma': 0.0215, 'beta': 0.95, 'price': 98.40,  'change': -0.28},
+    'OYAKC': {'mu': 0.00045, 'sigma': 0.0205, 'beta': 0.90, 'price': 54.80,  'change': 0.28},
+    'GOLTS': {'mu': 0.00038, 'sigma': 0.0230, 'beta': 1.00, 'price': 32.60,  'change': 0.56},
+    'THYAO': {'mu': 0.00082, 'sigma': 0.0285, 'beta': 1.32, 'price': 298.60, 'change': 2.14},
+    'PGSUS': {'mu': 0.00065, 'sigma': 0.0312, 'beta': 1.18, 'price': 521.40, 'change': -0.85},
+    'TAVHL': {'mu': 0.00058, 'sigma': 0.0258, 'beta': 1.14, 'price': 248.60, 'change': 1.64},
+    'CLEBI': {'mu': 0.00055, 'sigma': 0.0268, 'beta': 1.18, 'price': 183.20, 'change': 1.22},
+    'BIMAS': {'mu': 0.00042, 'sigma': 0.0168, 'beta': 0.72, 'price': 389.40, 'change': 0.22},
+    'SOKM':  {'mu': 0.00040, 'sigma': 0.0222, 'beta': 0.94, 'price': 78.30,  'change': -0.68},
+    'MAVI':  {'mu': 0.00058, 'sigma': 0.0245, 'beta': 1.06, 'price': 184.60, 'change': 1.35},
+    'MGROS': {'mu': 0.00048, 'sigma': 0.0205, 'beta': 0.89, 'price': 234.60, 'change': 1.45},
+    'ASELS': {'mu': 0.00065, 'sigma': 0.0248, 'beta': 1.12, 'price': 83.45,  'change': 3.21},
+    'LOGO':  {'mu': 0.00072, 'sigma': 0.0295, 'beta': 1.22, 'price': 142.80, 'change': -1.87},
+    'INDES': {'mu': 0.00060, 'sigma': 0.0278, 'beta': 1.20, 'price': 286.40, 'change': 1.14},
+    'KONTR': {'mu': 0.00065, 'sigma': 0.0288, 'beta': 1.24, 'price': 74.60,  'change': 1.87},
+    'KAREL': {'mu': 0.00055, 'sigma': 0.0305, 'beta': 1.30, 'price': 98.60,  'change': -1.44},
+    'NETAS': {'mu': 0.00052, 'sigma': 0.0315, 'beta': 1.28, 'price': 94.60,  'change': 0.95},
+    'TCELL': {'mu': 0.00048, 'sigma': 0.0185, 'beta': 0.80, 'price': 82.40,  'change': 0.58},
+    'TTKOM': {'mu': 0.00040, 'sigma': 0.0175, 'beta': 0.75, 'price': 42.20,  'change': 0.14},
+    'ANSGR': {'mu': 0.00042, 'sigma': 0.0215, 'beta': 0.90, 'price': 52.40,  'change': 0.48},
+    'AKGRT': {'mu': 0.00040, 'sigma': 0.0205, 'beta': 0.88, 'price': 38.60,  'change': -0.26},
+    'RAYSG': {'mu': 0.00038, 'sigma': 0.0228, 'beta': 0.98, 'price': 14.52,  'change': 0.69},
+    'ISGYO': {'mu': 0.00035, 'sigma': 0.0232, 'beta': 0.98, 'price': 14.38,  'change': 0.84},
+    'EKGYO': {'mu': 0.00038, 'sigma': 0.0242, 'beta': 1.04, 'price': 12.64,  'change': 1.52},
+    'ECILC': {'mu': 0.00048, 'sigma': 0.0218, 'beta': 0.94, 'price': 64.80,  'change': 0.72},
+    'PETKM': {'mu': 0.00048, 'sigma': 0.0222, 'beta': 0.98, 'price': 34.60,  'change': 0.74},
+    'GUBRF': {'mu': 0.00040, 'sigma': 0.0230, 'beta': 0.98, 'price': 54.20,  'change': 1.45},
+    'DEVA':  {'mu': 0.00044, 'sigma': 0.0235, 'beta': 1.02, 'price': 38.20,  'change': -0.52},
+    'SELEC': {'mu': 0.00040, 'sigma': 0.0225, 'beta': 0.96, 'price': 52.60,  'change': 0.34},
+    'AEFES': {'mu': 0.00050, 'sigma': 0.0192, 'beta': 0.85, 'price': 128.60, 'change': 0.44},
+    'CCOLA': {'mu': 0.00055, 'sigma': 0.0185, 'beta': 0.80, 'price': 194.80, 'change': 0.92},
+    'TATGD': {'mu': 0.00042, 'sigma': 0.0215, 'beta': 0.93, 'price': 42.80,  'change': -0.37},
+    'BANVT': {'mu': 0.00038, 'sigma': 0.0235, 'beta': 1.02, 'price': 62.40,  'change': 1.18},
+    'ULKER': {'mu': 0.00044, 'sigma': 0.0198, 'beta': 0.85, 'price': 92.30,  'change': 0.22},
+    'MPARK': {'mu': 0.00055, 'sigma': 0.0225, 'beta': 0.98, 'price': 102.40, 'change': 2.15},
+    'PRKME': {'mu': 0.00045, 'sigma': 0.0248, 'beta': 1.08, 'price': 34.60,  'change': 0.73},
+    'KRDMA': {'mu': 0.00036, 'sigma': 0.0252, 'beta': 1.10, 'price': 16.80,  'change': 0.60},
 }
 
-# ════════════════════════════════════════════════════════
-# VERİ ÇEKME
-# ════════════════════════════════════════════════════════
-_cache = {}
+SEKTORLER = sorted(set(v[1] for v in BIST100.values()))
+COLORS = ['#FF9900', '#2F74D0', '#2A9D8F', '#E63946', '#b794f4',
+          '#76e4f7', '#fbb6ce', '#9ae6b4', '#fed7aa', '#c3dafe']
 
-def hisse_verisi_cek(kod, donem='1y'):
+# ════════════════════════════════════════════════════════
+# 2. VERİ MOTORU  (cache aktif)
+# ════════════════════════════════════════════════════════
+_data_cache: dict = {}
+
+def fetch_data(ticker: str, period: str = '1y') -> dict:
+    """yfinance'dan veri çek; başarısız olursa FALLBACK kullan. Sonucu cache'le."""
+    key = f"{ticker}_{period}"
+    if key in _data_cache:
+        return _data_cache[key]
     try:
-        t  = yf.Ticker(f'{kod}.IS')
-        df = t.history(period=donem, auto_adjust=True)
-        if df.empty or len(df) < 20: raise ValueError()
-        df['ret'] = np.log(df['Close']/df['Close'].shift(1))
-        df = df.dropna()
+        df = yf.Ticker(f'{ticker}.IS').history(period=period, auto_adjust=True)
+        if df.empty or len(df) < 20:
+            raise ValueError("Yetersiz veri")
+        df['ret'] = np.log(df['Close'] / df['Close'].shift(1))
+        df.dropna(inplace=True)
         mu    = float(df['ret'].mean())
         sigma = float(df['ret'].std())
         price = float(df['Close'].iloc[-1])
-        chg   = float((df['Close'].iloc[-1]/df['Close'].iloc[-2]-1)*100)
+        change = float((df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100)
+        # Beta hesabı: BIST100 endeksiyle regresyon
         try:
-            bist = yf.Ticker('XU100.IS').history(period=donem, auto_adjust=True)
-            bist['ret'] = np.log(bist['Close']/bist['Close'].shift(1))
-            bist = bist.dropna()
-            common = df['ret'].index.intersection(bist['ret'].index)
+            bist_df = yf.Ticker('XU100.IS').history(period=period, auto_adjust=True)
+            bist_df['ret'] = np.log(bist_df['Close'] / bist_df['Close'].shift(1))
+            bist_df.dropna(inplace=True)
+            common = df.index.intersection(bist_df.index)
             if len(common) > 30:
-                cv   = np.cov(df['ret'].loc[common], bist['ret'].loc[common])
-                beta = float(cv[0,1]/cv[1,1])
+                cov_mat = np.cov(df.loc[common, 'ret'], bist_df.loc[common, 'ret'])
+                beta = float(cov_mat[0, 1] / cov_mat[1, 1])
             else:
-                beta = FALLBACK.get(kod,{}).get('beta',1.0)
-        except:
-            beta = FALLBACK.get(kod,{}).get('beta',1.0)
-        result = {'mu':mu,'sigma':sigma,'beta':round(beta,2),
-                  'price':round(price,2),'change':round(chg,2),
-                  'closes':df['Close'].round(2).tolist(),
-                  'returns':df['ret'].tolist(),'kaynak':'Yahoo Finance ✓'}
+                beta = FALLBACK.get(ticker, {}).get('beta', 1.0)
+        except Exception:
+            beta = FALLBACK.get(ticker, {}).get('beta', 1.0)
+
+        result = {
+            'closes':  df['Close'].round(2).tolist(),
+            'returns': df['ret'].tolist(),
+            'dates':   [str(d.date()) for d in df.index],
+            'mu':      mu,
+            'sigma':   sigma,
+            'beta':    round(beta, 3),
+            'price':   round(price, 2),
+            'change':  round(change, 2),
+            'kaynak':  'Yahoo Finance ✓',
+        }
+        _data_cache[key] = result
         return result
-    except:
-        fb = FALLBACK.get(kod,{'mu':0.0005,'sigma':0.022,'beta':1.0,'price':50.0,'change':0.0})
-        return {**fb,'closes':[],'returns':[],'kaynak':'Fallback ⚠'}
+    except Exception:
+        fb = FALLBACK.get(ticker, {'mu': 0.0005, 'sigma': 0.022, 'beta': 1.0, 'price': 50.0, 'change': 0.0})
+        np.random.seed(abs(hash(ticker)) % (2**32))
+        mock_rets   = np.random.normal(fb['mu'], fb['sigma'], 252).tolist()
+        mock_prices = (fb['price'] * np.cumprod(1 + np.array(mock_rets))).tolist()
+        mock_dates  = [str(d.date()) for d in pd.date_range(end=pd.Timestamp.now(), periods=252)]
+        result = {
+            'closes':  mock_prices, 'returns': mock_rets, 'dates': mock_dates,
+            'mu': fb['mu'], 'sigma': fb['sigma'], 'beta': fb.get('beta', 1.0),
+            'price': fb['price'], 'change': fb['change'], 'kaynak': 'Fallback ⚠',
+        }
+        _data_cache[key] = result
+        return result
+
+
+def fit_garch(returns: list, horizon: int = 1) -> dict:
+    """GARCH(1,1) modeli. Hata durumunda {'error': mesaj} döner."""
+    try:
+        from arch import arch_model
+        r = pd.Series(returns).dropna() * 100
+        if r.std() < 1e-6:
+            return {'error': 'Varyans çok düşük'}
+        res = arch_model(r, vol='Garch', p=1, q=1, dist='normal',
+                         rescale=False).fit(disp='off', show_warning=False)
+        fc = res.forecast(horizon=horizon, reindex=False)
+        return {
+            'cond_vol': (res.conditional_volatility / 100).tolist(),
+            'omega':    float(res.params.get('omega', 0)),
+            'alpha':    float(res.params.get('alpha[1]', 0)),
+            'beta_g':   float(res.params.get('beta[1]', 0)),
+            'tahmin':   float(np.sqrt(fc.variance.values[-1, :].mean())) / 100,
+            'error':    None,
+        }
+    except Exception as e:
+        return {'error': str(e)[:120]}
+
 
 # ════════════════════════════════════════════════════════
-# RİSK HESAPLAMA
+# 3. RİSK MOTORİ  (düzeltilmiş formüller)
 # ════════════════════════════════════════════════════════
-def hesapla(hisseler, w_raw, pv, guven, hz, mc_n, donem, opt_metot):
-    w = np.array(w_raw)/np.array(w_raw).sum()
+# Formüller (JP Morgan RiskMetrics standardı):
+#
+#   z            = norm.ppf(α)          α = güven seviyesi (ör. 0.99)
+#                  z pozitif (sağ kuyruk quantile'ı; kayıp solda)
+#
+#   Parametrik VaR = W × (z × σ × √T  −  μ × T)
+#   (pozitif → kayıp tutarı; T gün ileriye projeksiyon)
+#
+#   CVaR (Expected Shortfall):
+#     CVaR = W × √T × σ × φ(z) / (1−α)  −  W × μ × T
+#   (VaR'ın ötesindeki koşullu ortalama kayıp)
+#
+#   Sharpe = (μ_yıllık − r_f) / σ_yıllık
+#     r_f = 0.40  (TCMB politika faizine göre yaklaşık yıllık oran, ondalık)
+#     μ_yıllık = μ_günlük × 252
+#     σ_yıllık = σ_günlük × √252
+#
+#   VaR Katkısı_i = w_i × W × (z × σ_i − μ_i)   (bileşen VaR yaklaşımı)
 
-    # Veri
+RF_ANNUAL = 0.40   # Türkiye risk-free (TCMB yaklaşımı, yıllık ondalık)
+RF_DAILY  = RF_ANNUAL / 252
+
+def run_analysis(tickers: list, weights_dict: dict,
+                 pv: float, ci: float, hz: int, mc_n: int, period: str) -> dict:
+    h = tickers
+    w_raw = np.array([weights_dict.get(k, 100.0 / len(h)) for k in h])
+    w = w_raw / w_raw.sum()   # normalize → toplamı 1
+
+    # Veri çek
     meta = {}
-    for k in hisseler:
-        v = hisse_verisi_cek(k, donem)
-        v['sirket'] = BIST100.get(k,(k,))[0]
-        v['sektor']  = BIST100.get(k,('','-'))[1]
-        meta[k] = v
+    for k in h:
+        d = fetch_data(k, period)
+        d['sirket'] = BIST100.get(k, (k, '-'))[0]
+        d['sektor']  = BIST100.get(k, ('-', '-'))[1]
+        meta[k] = d
 
-    mu_v   = np.array([meta[k]['mu']    for k in hisseler])
-    sig_v  = np.array([meta[k]['sigma'] for k in hisseler])
-    beta_v = np.array([meta[k].get('beta',1.0) for k in hisseler])
+    mu_v    = np.array([meta[k]['mu']    for k in h])
+    sig_v   = np.array([meta[k]['sigma'] for k in h])
+    beta_v  = np.array([meta[k].get('beta', 1.0) for k in h])
+    rets_l  = [meta[k]['returns'] for k in h]
 
-    # Korelasyon
-    rets = [meta[k].get('returns',[]) for k in hisseler]
-    if all(len(r)>30 for r in rets):
-        ml  = min(len(r) for r in rets)
-        dff = pd.DataFrame({k: meta[k]['returns'][-ml:] for k in hisseler})
-        corr= dff.corr()
+    # Korelasyon matrisi
+    if all(len(r) > 30 for r in rets_l):
+        ml  = min(len(r) for r in rets_l)
+        dff = pd.DataFrame({k: meta[k]['returns'][-ml:] for k in h})
+        corr    = dff.corr()
+        p_rets  = dff.dot(w).tolist()   # portföy getiri serisi (GARCH için)
     else:
-        n = len(hisseler)
-        c = np.full((n,n),0.35); np.fill_diagonal(c,1.0)
-        corr = pd.DataFrame(c,index=hisseler,columns=hisseler)
+        corr   = pd.DataFrame(np.eye(len(h)), index=h, columns=h)
+        p_rets = (np.random.default_rng(42)
+                    .normal(float(w @ mu_v), float(w @ sig_v), 252)).tolist()
 
-    cov = np.outer(sig_v,sig_v)*corr.values
-    p_mu  = float(w@mu_v)
-    p_sig = float(np.sqrt(w@cov@w))
-    p_beta= float(w@beta_v)
+    cov   = np.outer(sig_v, sig_v) * corr.values
+    p_mu  = float(w @ mu_v)
+    p_sig = float(np.sqrt(w @ cov @ w))
+    p_beta= float(w @ beta_v)
 
-    # Parametrik VaR
-    z     = float(-norm.ppf(1-guven))
+    # ── Parametrik VaR (düzeltilmiş) ──────────────────────────────
+    # z = norm.ppf(α) > 0  (örn. %99 → z ≈ 2.326)
+    z     = float(norm.ppf(ci))          # pozitif
     sqrtT = float(np.sqrt(hz))
-    d_var = pv*(p_mu*hz - z*p_sig*sqrtT)
-    g_var = pv*(p_mu - z*p_sig)
-    vp    = abs(d_var)/pv*100
-    cvar  = pv*p_sig*float(norm.pdf(z))/(1-guven) - pv*p_mu
-    sharpe= (p_mu*252-0.35)/(p_sig*np.sqrt(252))
+    # Kayıp = W × (z×σ×√T − μ×T)  →  negatif getiri senaryosu
+    d_var = pv * (z * p_sig * sqrtT - p_mu * hz)
+    d_var = max(d_var, 0.0)              # teorik minimum 0
 
-    # Monte Carlo
-    np.random.seed(42)
-    pl   = pv*(p_mu*hz + p_sig*sqrtT*np.random.standard_normal(mc_n))
+    vp    = d_var / pv * 100             # portföy değerine oran %
+
+    # ── CVaR (düzeltilmiş) ────────────────────────────────────────
+    # CVaR = W × √T × σ × φ(z)/(1−α) − W × μ × T
+    phi_z = float(norm.pdf(z))
+    cvar  = pv * sqrtT * p_sig * phi_z / (1 - ci) - pv * p_mu * hz
+    cvar  = max(cvar, d_var)             # CVaR ≥ VaR her zaman
+
+    # ── Sharpe (düzeltilmiş) ──────────────────────────────────────
+    mu_annual  = p_mu  * 252
+    sig_annual = p_sig * np.sqrt(252)
+    sharpe = (mu_annual - RF_ANNUAL) / sig_annual if sig_annual > 0 else 0.0
+
+    # ── Monte Carlo ───────────────────────────────────────────────
+    rng  = np.random.default_rng(42)
+    pl   = pv * (p_mu * hz + p_sig * sqrtT * rng.standard_normal(mc_n))
     pl_s = np.sort(pl)
-    mc_v = abs(float(pl_s[int((1-guven)*mc_n)]))
-    mc_k = abs(float(pl_s[0]))
-    mc_m = float(np.median(pl_s))
+    idx_var  = max(int((1 - ci) * mc_n) - 1, 0)
+    mc_var   = abs(float(pl_s[idx_var]))
+    mc_worst = abs(float(pl_s[0]))
+    mc_med   = float(np.median(pl_s))
 
-    # Senaryo
+    # ── Senaryo analizi ───────────────────────────────────────────
     sen = {
-        'boga': float(pv*(p_mu+2*p_sig)*sqrtT),
-        'baz':  float(pv*p_mu*hz),
-        'ayi':  float(pv*(p_mu-2*p_sig)*sqrtT),
-        'kriz': float(pv*(p_mu-3.5*p_sig)*sqrtT),
+        'boga': float(pv * (p_mu + 2 * p_sig) * sqrtT),
+        'baz':  float(pv * p_mu * hz),
+        'ayi':  float(pv * (p_mu - 2 * p_sig) * sqrtT),
+        'kriz': float(pv * (p_mu - 3.5 * p_sig) * sqrtT),
     }
 
-    # GARCH
-    garch = {}
-    ret0 = meta[hisseler[0]].get('returns', [])
-    if not ret0 or len(ret0) < 60:
-        np.random.seed(42)
-        sig0 = meta[hisseler[0]].get('sigma', 0.02)
-        mu0  = meta[hisseler[0]].get('mu', 0.0005)
-        ret0 = (np.random.normal(mu0, sig0, 500)).tolist()
-    if ret0 and len(ret0) > 60:
-        try:
-            from arch import arch_model
-            r   = pd.Series(ret0) * 100
-            r   = r.dropna()
-            res = arch_model(r, vol='Garch', p=1, q=1, dist='normal', rescale=False).fit(disp='off', show_warning=False)
-            fc  = res.forecast(horizon=hz, reindex=False)
-            garch = {
-                'dates':    [str(d.date()) for d in res.conditional_volatility.index],
-                'cond_vol': (res.conditional_volatility / 100).tolist(),
-                'omega':    float(res.params.get('omega', 0)),
-                'alpha':    float(res.params.get('alpha[1]', 0)),
-                'beta_g':   float(res.params.get('beta[1]', 0)),
-                'tahmin':   float(np.sqrt(fc.variance.values[-1, :].mean())) / 100,
-            }
-        except Exception as eg:
-            garch = {'hata': str(eg)}
+    # ── GARCH ─────────────────────────────────────────────────────
+    garch = fit_garch(p_rets, horizon=hz)
 
-    # Optimizasyon
-    opt = {}
-    if all(len(r)>30 for r in rets):
-        try:
-            from pypfopt import EfficientFrontier, risk_models, expected_returns
-            mu_y  = expected_returns.mean_historical_return(dff,returns_data=True,frequency=252)
-            cov_y = risk_models.sample_cov(dff,returns_data=True,frequency=252)
-            ef = EfficientFrontier(mu_y,cov_y,weight_bounds=(0,0.4))
-            if opt_metot=='sharpe': ef.max_sharpe(risk_free_rate=0.35)
-            else: ef.min_volatility()
-            wc  = ef.clean_weights()
-            prf = ef.portfolio_performance(verbose=False,risk_free_rate=0.35)
-            opt = {'w':wc,'ret':round(prf[0]*100,2),'vol':round(prf[1]*100,2),'sharpe':round(prf[2],3)}
-        except: pass
-
-    # Katkı tablosu
-    rows = []
-    for i,k in enumerate(hisseler):
-        hvc = pv*w[i]*(mu_v[i]-z*sig_v[i])
-        rows.append({
-            'Kod':k,'Şirket':meta[k]['sirket'],'Sektör':meta[k]['sektor'],
-            'Fiyat ₺':meta[k]['price'],'Değişim %':round(meta[k]['change'],2),
-            'Ağırlık %':round(w[i]*100,1),
-            'μ/gün %':round(mu_v[i]*100,4),'σ/gün %':round(sig_v[i]*100,4),
-            'Beta':round(float(beta_v[i]),2),'VaR Katkı ₺':round(abs(hvc),0),
-            'Yıllık Vol %':round(sig_v[i]*np.sqrt(252)*100,1),
-            'Kaynak':meta[k]['kaynak']
+    # ── Katkı tablosu (Component VaR yaklaşımı) ───────────────────
+    katki_rows = []
+    for i, k in enumerate(h):
+        # Bileşen VaR_i = w_i × W × (z × σ_i − μ_i)
+        comp_var = pv * w[i] * (z * meta[k]['sigma'] - meta[k]['mu'])
+        katki_rows.append({
+            'Kod':        k,
+            'Şirket':     meta[k]['sirket'],
+            'Sektör':     meta[k]['sektor'],
+            'Fiyat ₺':    round(meta[k]['price'], 2),
+            'Değişim %':  round(meta[k]['change'], 2),
+            'Ağırlık %':  round(w[i] * 100, 1),
+            'μ/gün %':    round(meta[k]['mu']    * 100, 4),
+            'σ/gün %':    round(meta[k]['sigma'] * 100, 4),
+            'Beta':       round(float(beta_v[i]), 3),
+            'VaR Katkı ₺': round(max(comp_var, 0), 0),
+            'Yıllık Vol %': round(meta[k]['sigma'] * np.sqrt(252) * 100, 1),
+            'Kaynak':     meta[k]['kaynak'],
         })
 
     return {
-        'p_mu':p_mu,'p_sig':p_sig,'p_beta':p_beta,'z':z,
-        'd_var':abs(d_var),'g_var':abs(g_var),'vp':vp,
-        'cvar':abs(cvar),'sharpe':sharpe,
-        'yillik_mu':p_mu*252*100,'yillik_vol':p_sig*np.sqrt(252)*100,
-        'mc_var':mc_v,'mc_kotu':mc_k,'mc_medyan':mc_m,
-        'pl_s':pl_s.tolist(),'sen':sen,'katki':rows,
-        'corr':corr,'meta':meta,'w':w.tolist(),
-        'garch':garch,'opt':opt,
+        'p_mu': p_mu, 'p_sig': p_sig, 'p_beta': p_beta,
+        'z': z, 'var': d_var, 'vp': vp, 'cvar': cvar, 'sharpe': sharpe,
+        'mu_annual': mu_annual * 100, 'sig_annual': sig_annual * 100,
+        'mc_var': mc_var, 'mc_worst': mc_worst, 'mc_med': mc_med,
+        'pl_s': pl_s.tolist(), 'sen': sen, 'garch': garch,
+        'katki': katki_rows, 'corr': corr, 'meta': meta, 'w': w.tolist(),
     }
 
+
 # ════════════════════════════════════════════════════════
-# RENKLER VE CSS
+# 4. CSS
 # ════════════════════════════════════════════════════════
-BG=     '#0a0e1a'; CARD='#131c2e'; PANEL='#111827'
-ACCENT= '#63b3ed'; DANGER='#fc8181'; SUCCESS='#68d391'
-WARNING='#f6e05e'; PURPLE='#b794f4'; TEXT='#e2e8f0'
-MUTED=  '#718096'; GRID='#1a2235'
-COLORS= ['#63b3ed','#68d391','#f6e05e','#fc8181','#b794f4',
-         '#76e4f7','#fbb6ce','#9ae6b4','#fed7aa','#c3dafe',
-         '#fefcbf','#bee3f8','#c6f6d5','#fed7d7','#e9d8fd']
-
-PL = dict(paper_bgcolor=CARD,plot_bgcolor=CARD,
-          font=dict(family='IBM Plex Mono',color=TEXT,size=11),
-          margin=dict(l=50,r=20,t=40,b=40),
-          xaxis=dict(gridcolor=GRID,zerolinecolor=GRID),
-          yaxis=dict(gridcolor=GRID,zerolinecolor=GRID),
-          legend=dict(bgcolor=CARD,bordercolor=GRID,borderwidth=1,font=dict(size=10)))
-
-SEKTORLER = sorted(set(v[1] for v in BIST100.values()))
-
-def ftl(v): return f'₺{abs(v):,.0f}'
-def gc(fig,h=320):
-    return dcc.Graph(figure=fig,config={'displayModeBar':True,'displaylogo':False},
-                     style={'height':f'{h}px'})
-def krt(lbl,val,sub,color,cls):
-    return html.Div([html.Div(lbl,className='metric-label'),
-                     html.Div(val,className='metric-value',style={'color':color}),
-                     html.Div(sub,className='metric-sub')],className=f'metric-card {cls}')
-
-CSS = '''
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
-:root{--bg:#0a0e1a;--bg2:#0f1724;--bg3:#1a2235;--card:#131c2e;--panel:#111827;
-  --border:rgba(99,179,237,.14);--border2:rgba(99,179,237,.28);
-  --accent:#63b3ed;--danger:#fc8181;--success:#68d391;--warning:#f6e05e;--purple:#b794f4;
-  --text:#e2e8f0;--text2:#a0aec0;--text3:#718096;
-  --mono:"IBM Plex Mono",monospace;--sans:"IBM Plex Sans",sans-serif;}
+CSS = """
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+:root {
+  --bg:#000;--panel:#0d0d0d;--card:#141414;--border:#262626;
+  --amber:#FF9900;--blue:#2F74D0;--red:#E63946;--green:#2A9D8F;
+  --text:#e0e0e0;--muted:#808080;--font:"IBM Plex Mono",monospace;
+}
 *{margin:0;padding:0;box-sizing:border-box;}
-body,.app-wrap{background:var(--bg)!important;color:var(--text);font-family:var(--sans);min-height:100vh;}
-.header{background:var(--bg2);border-bottom:1px solid var(--border2);padding:0 2rem;position:sticky;top:0;z-index:200;box-shadow:0 2px 20px rgba(0,0,0,.4);}
-.header-inner{max-width:1500px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:60px;}
-.logo{display:flex;align-items:center;gap:12px;}
-.logo-icon{width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#63b3ed,#2b6cb0);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;font-weight:700;color:#fff;}
-.logo-text{font-family:var(--mono);font-size:14px;font-weight:600;letter-spacing:.04em;}
-.logo-sub{font-size:10px;color:var(--text3);font-family:var(--mono);}
-.header-right{display:flex;align-items:center;gap:10px;}
-.live-dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 7px var(--success);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.live-txt{font-family:var(--mono);font-size:11px;color:var(--success);}
-.badge{font-family:var(--mono);font-size:11px;padding:4px 12px;border:1px solid var(--border2);border-radius:20px;color:var(--accent);}
-.badge-sm{font-family:var(--mono);font-size:10px;color:var(--text3);}
-.main-grid{max-width:1500px;margin:0 auto;padding:1.5rem 2rem;display:grid;grid-template-columns:310px 1fr;gap:1.5rem;align-items:start;}
-.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:1.2rem;}
-.panel-header{padding:.9rem 1.2rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
-.panel-title{font-size:11px;font-weight:600;font-family:var(--mono);color:var(--accent);letter-spacing:.08em;text-transform:uppercase;}
-.panel-body{padding:1.1rem;}
-.search-input{width:100%;background:var(--bg3)!important;border:1px solid var(--border)!important;border-radius:8px;padding:9px 12px;color:var(--text)!important;font-family:var(--mono);font-size:12px;outline:none;margin-bottom:.7rem;transition:border-color .2s;}
-.search-input:focus{border-color:var(--accent)!important;}
-.search-input::placeholder{color:var(--text3);}
-.pills{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:.7rem;}
-.pill{font-size:10px;font-family:var(--mono);padding:3px 8px;border:1px solid var(--border);border-radius:20px;background:transparent;color:var(--text3);cursor:pointer;transition:all .18s;white-space:nowrap;}
-.pill:hover,.pill.active{border-color:var(--accent);color:var(--accent);background:rgba(99,179,237,.08);}
-.stock-badge{font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:5px;}
-.stock-list{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;}
-.stock-list::-webkit-scrollbar{width:3px;}
-.stock-list::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
-.stock-item{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:7px;cursor:pointer;border:1px solid transparent;background:var(--bg3);transition:all .13s;}
-.stock-item:hover{border-color:var(--border2);}
-.stock-item.selected{border-color:var(--accent);background:rgba(99,179,237,.07);}
-.stock-code{font-family:var(--mono);font-size:12px;font-weight:600;}
-.stock-name{font-size:10px;color:var(--text3);margin-top:1px;}
-.stock-check{width:16px;height:16px;border-radius:3px;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;transition:all .13s;}
-.stock-check.checked{background:var(--accent);border-color:var(--accent);color:white;}
-.chips{display:flex;flex-wrap:wrap;gap:5px;min-height:24px;margin-bottom:.8rem;}
-.chip{display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:5px;background:rgba(99,179,237,.1);border:1px solid rgba(99,179,237,.25);font-family:var(--mono);font-size:11px;color:var(--accent);}
-.chip-x{cursor:pointer;color:var(--text3);font-size:11px;}
-.chip-x:hover{color:var(--danger);}
-.empty{color:var(--text3);font-size:11px;font-style:italic;}
-.weight-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem;}
-.weight-label{font-size:10px;color:var(--text3);font-family:var(--mono);}
-.eq-btn{padding:5px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--accent);}
-.eq-btn:hover{background:rgba(99,179,237,.1);}
-.weight-row{display:flex;align-items:center;gap:7px;margin-bottom:7px;}
-.weight-code{font-family:var(--mono);font-size:11px;color:var(--accent);min-width:52px;}
-.weight-val{font-family:var(--mono);font-size:11px;color:var(--text2);min-width:36px;text-align:right;}
-.weight-slider{flex:1;}
-.weight-total{font-family:var(--mono);font-size:12px;margin-top:6px;text-align:right;}
-.weight-total.ok{color:var(--success);}.weight-total.err{color:var(--danger);}
-.param-row{margin-bottom:1rem;}
-.param-label{font-size:11px;color:var(--text2);font-family:var(--mono);margin-bottom:6px;display:flex;justify-content:space-between;}
-.param-val{color:var(--accent);font-weight:500;}
-.rc-slider-track{background-color:var(--accent)!important;}
-.rc-slider-handle{border-color:var(--accent)!important;background:var(--accent)!important;box-shadow:none!important;width:14px!important;height:14px!important;margin-top:-5px!important;}
-.rc-slider-rail{background-color:var(--bg3)!important;}
-.Select-control,.Select-menu-outer{background:var(--bg3)!important;border:1px solid var(--border)!important;color:var(--text)!important;font-family:var(--mono)!important;font-size:12px!important;border-radius:7px!important;}
-.Select-value-label,.Select-placeholder{color:var(--text)!important;}
-.Select-option{background:var(--bg3)!important;color:var(--text)!important;font-size:12px!important;}
-.Select-option:hover{background:var(--bg2)!important;}
-.run-btn{width:100%;padding:13px;background:linear-gradient(135deg,#2b6cb0,#2c5282);border:none;border-radius:9px;cursor:pointer;font-family:var(--mono);font-size:13px;font-weight:700;color:#fff;letter-spacing:.06em;transition:all .2s;margin-top:.4rem;}
-.run-btn:hover:not(:disabled){background:linear-gradient(135deg,#3182ce,#2b6cb0);transform:translateY(-1px);}
-.run-btn:disabled{opacity:.4;cursor:not-allowed;}
-.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.9rem;margin-bottom:1.2rem;}
-.metric-card{background:var(--card);border:1px solid var(--border);border-radius:11px;padding:1rem;position:relative;overflow:hidden;}
-.metric-card::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;}
-.metric-card.red::before{background:var(--danger);}.metric-card.yellow::before{background:var(--warning);}
-.metric-card.blue::before{background:var(--accent);}.metric-card.green::before{background:var(--success);}
-.metric-card.purple::before{background:var(--purple);}
-.metric-label{font-size:10px;color:var(--text3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px;}
-.metric-value{font-size:19px;font-weight:700;font-family:var(--mono);line-height:1;}
-.metric-sub{font-size:10px;color:var(--text3);margin-top:4px;font-family:var(--mono);}
-.custom-tabs{border-bottom:1px solid var(--border)!important;margin-bottom:1.2rem;}
-.tab{background:transparent!important;border:none!important;border-bottom:2px solid transparent!important;color:var(--text3)!important;font-family:var(--mono)!important;font-size:11px!important;text-transform:uppercase!important;letter-spacing:.05em!important;padding:8px 14px!important;}
-.tab-active{color:var(--accent)!important;border-bottom:2px solid var(--accent)!important;background:transparent!important;}
-.alert{padding:10px 14px;border-radius:8px;font-size:11px;margin-bottom:1rem;font-family:var(--mono);}
-.alert-info{background:rgba(99,179,237,.08);border:1px solid rgba(99,179,237,.2);color:var(--accent);}
-.alert-danger{background:rgba(252,129,129,.07);border:1px solid rgba(252,129,129,.28);color:var(--danger);}
-.alert-warning{background:rgba(246,224,94,.07);border:1px solid rgba(246,224,94,.25);color:var(--warning);}
-.scenario-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.8rem;}
-.scenario-card{background:var(--card);border:1px solid var(--border);border-radius:9px;padding:.9rem;}
-.scenario-title{font-size:10px;font-family:var(--mono);color:var(--text2);margin-bottom:5px;text-transform:uppercase;}
-.scenario-val{font-size:18px;font-weight:700;font-family:var(--mono);}
-.formula-box{margin-top:.8rem;padding:.8rem;background:var(--bg3);border-radius:8px;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.9;}
-.placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4rem;gap:14px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:12px;}
-.place-icon{font-size:52px;opacity:.12;}.place-title{font-size:14px;color:var(--text2);font-family:var(--mono);}
-.place-sub{font-size:12px;color:var(--text3);max-width:380px;line-height:1.6;}
-@media(max-width:1100px){.main-grid{grid-template-columns:1fr;}.metrics-grid{grid-template-columns:repeat(2,1fr);}.scenario-grid{grid-template-columns:repeat(2,1fr);}}
-'''
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:12px;}
+.header{background:var(--panel);border-bottom:2px solid var(--amber);
+  padding:10px 20px;display:flex;justify-content:space-between;align-items:center;
+  position:sticky;top:0;z-index:100;}
+.header-title{color:var(--amber);font-weight:600;font-size:15px;letter-spacing:1px;}
+.main-grid{display:grid;grid-template-columns:290px 1fr;gap:15px;
+  padding:15px;max-width:1600px;margin:0 auto;}
+.panel{background:var(--card);border:1px solid var(--border);padding:15px;margin-bottom:15px;}
+.panel-title{color:var(--muted);font-size:10px;text-transform:uppercase;
+  margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:5px;letter-spacing:.8px;}
+.search-box{width:100%;background:var(--bg);border:1px solid var(--border);
+  color:var(--amber);padding:8px;font-family:var(--font);margin-bottom:8px;
+  outline:none;font-size:11px;}
+.search-box:focus{border-color:var(--amber);}
+.stock-item{display:flex;justify-content:space-between;align-items:center;
+  padding:6px 8px;cursor:pointer;border-bottom:1px solid #1a1a1a;transition:background .12s;}
+.stock-item:hover{background:#1a1a1a;}
+.stock-item.selected{border-left:3px solid var(--amber);background:#111;color:var(--amber);}
+.stock-code{font-weight:600;font-size:12px;}
+.stock-name{font-size:9px;color:var(--muted);}
+.param-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+.run-btn{width:100%;padding:11px;background:var(--amber);color:#000;border:none;
+  font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;
+  letter-spacing:.06em;transition:background .2s;margin-top:8px;}
+.run-btn:hover:not([disabled]){background:#cc7a00;}
+.run-btn[disabled]{opacity:.4;cursor:not-allowed;}
+.btn-outline{background:transparent;color:var(--amber);border:1px solid var(--amber);
+  padding:6px 10px;cursor:pointer;font-family:var(--font);font-size:10px;width:100%;
+  transition:background .15s;}
+.btn-outline:hover{background:rgba(255,153,0,.1);}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px;}
+.metric-card{background:var(--panel);border:1px solid var(--border);padding:14px;
+  border-top:2px solid var(--blue);}
+.metric-card.red-top{border-top-color:var(--red);}
+.metric-card.amber-top{border-top-color:var(--amber);}
+.metric-card.green-top{border-top-color:var(--green);}
+.metric-label{color:var(--muted);font-size:10px;margin-bottom:4px;}
+.metric-val{font-size:20px;font-weight:700;margin-top:4px;}
+.metric-sub{font-size:9px;margin-top:4px;color:var(--muted);}
+.val-red{color:var(--red);}.val-green{color:var(--green);}
+.val-amber{color:var(--amber);}.val-blue{color:var(--blue);}
+.custom-tabs{border-bottom:1px solid var(--border);margin-bottom:15px;display:flex;}
+.tab{background:transparent!important;border:none!important;
+  border-bottom:2px solid transparent!important;color:var(--muted)!important;
+  font-family:var(--font)!important;font-size:10px!important;
+  text-transform:uppercase!important;padding:10px 12px!important;
+  cursor:pointer;letter-spacing:.5px;}
+.tab-active{color:var(--amber)!important;border-bottom:2px solid var(--amber)!important;
+  font-weight:600;}
+.alert-box{background:#070f1a;border:1px solid #1a365d;color:#5096ed;
+  padding:9px 14px;margin-bottom:12px;font-size:11px;}
+.alert-danger{background:#1a0707;border:1px solid #5c1a1a;color:var(--red);
+  padding:9px 14px;margin-bottom:12px;font-size:11px;}
+.alert-warn{background:#1a1507;border:1px solid #5c4a1a;color:var(--amber);
+  padding:9px 14px;margin-bottom:12px;font-size:11px;}
+.scenario-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.scenario-card{background:var(--panel);border:1px solid var(--border);padding:12px;}
+.scenario-title{font-size:10px;color:var(--muted);text-transform:uppercase;margin-bottom:5px;}
+.scenario-val{font-size:18px;font-weight:700;}
+.formula-box{margin-top:14px;padding:12px;background:var(--panel);
+  border:1px solid var(--border);font-size:10px;color:var(--muted);line-height:1.9;}
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,.8);z-index:1000;display:none;
+  align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal-content{background:var(--card);border:1px solid var(--amber);
+  padding:25px;box-shadow:0 0 20px rgba(255,153,0,.2);width:480px;max-height:85vh;
+  overflow-y:auto;}
+.rc-slider-track{background-color:var(--amber)!important;}
+.rc-slider-handle{border-color:var(--amber)!important;background:var(--amber)!important;
+  width:14px!important;height:14px!important;margin-top:-5px!important;}
+.rc-slider-rail{background:#1a1a1a!important;}
+.rc-slider-mark-text{color:#fff!important;font-family:var(--font)!important;font-size:10px!important;}
+.chips{display:flex;flex-wrap:wrap;gap:5px;min-height:20px;margin:8px 0;}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;
+  background:rgba(255,153,0,.1);border:1px solid rgba(255,153,0,.3);
+  font-size:11px;color:var(--amber);}
+.chip-x{cursor:pointer;color:var(--muted);}
+.chip-x:hover{color:var(--red);}
+@media(max-width:1100px){
+  .main-grid{grid-template-columns:1fr;}
+  .metric-grid{grid-template-columns:repeat(2,1fr);}
+  .scenario-grid{grid-template-columns:repeat(2,1fr);}
+}
+"""
+
+PL = dict(
+    paper_bgcolor='#141414', plot_bgcolor='#141414',
+    font=dict(family='IBM Plex Mono', color='#e0e0e0', size=11),
+    margin=dict(l=55, r=20, t=40, b=40),
+    xaxis=dict(gridcolor='#262626', zerolinecolor='#262626'),
+    yaxis=dict(gridcolor='#262626', zerolinecolor='#262626'),
+    legend=dict(bgcolor='#141414', bordercolor='#262626', borderwidth=1),
+)
+
+def ftl(v):
+    return f"₺{abs(v):,.0f}"
+
 
 # ════════════════════════════════════════════════════════
-# DASH UYGULAMASI BAŞLATMA
+# 5. DASH LAYOUT
 # ════════════════════════════════════════════════════════
-app = dash.Dash(__name__, title='BIST 100 VaR Platform', suppress_callback_exceptions=True)
-server = app.server
+app = dash.Dash(
+    __name__,
+    suppress_callback_exceptions=True,
+    title='PORT | BIST 100 Risk Analytics',
+)
+server = app.server   # Gunicorn / Render için
 
-app.index_string = '''
-<!DOCTYPE html><html><head>
-{%metas%}<title>{%title%}</title>{%favicon%}
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>''' + CSS + '''</style>
-{%css%}</head><body>{%app_entry%}
-<footer>{%config%}{%scripts%}{%renderer%}</footer></body></html>
-'''
+app.index_string = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PORT | BIST 100 Risk Analytics</title>
+    <style>{CSS}</style>
+  </head>
+  <body>
+    {{%app_entry%}}
+    <footer>{{%config%}}{{%scripts%}}{{%renderer%}}</footer>
+  </body>
+</html>"""
 
 app.layout = html.Div([
-    # HEADER
-    html.Div([html.Div([
-        html.Div([html.Div('VaR',className='logo-icon'),
-                  html.Div([html.Div('BIST 100 · Portfolio Risk Analytics',className='logo-text'),
-                            html.Div('Bloomberg PORT · yfinance · GARCH · PyPortfolioOpt',className='logo-sub')])],className='logo'),
-        html.Div([html.Div(className='live-dot'),html.Div('15dk Gecikmeli',className='live-txt'),
-                  html.Div('Akademik Proje',className='badge')],className='header-right'),
-    ],className='header-inner')],className='header'),
+    # ── HEADER ──────────────────────────────────────────
+    html.Div([
+        html.Div("BAL620 PORT · BIST 100 RISK ANALYTICS", className='header-title'),
+        html.Div([
+            html.Span("⚠ VERİLER 15 DK GECİKMELİ",
+                      style={'color': 'var(--amber)', 'marginRight': '15px', 'fontWeight': '600'}),
+            html.Span("RENDER · PRODUCTION",
+                      style={'color': 'var(--green)'}),
+        ]),
+    ], className='header'),
 
     html.Div([
-        # SOL PANEL
+        # ── SOL PANEL ───────────────────────────────────
         html.Div([
-            # Hisse Seçimi
-            html.Div([html.Div([html.Span('📊 Hisse Seçimi',className='panel-title'),
-                                html.Span('0/15',id='sel-cnt',className='badge-sm')],className='panel-header'),
-                      html.Div([dcc.Input(id='srch',type='text',debounce=True,
-                                          placeholder='Hisse ara... THYAO, GARAN...',className='search-input'),
-                                html.Div([html.Button('Tümü',id='p-tumu',className='pill active',n_clicks=0,**{'data-sector':'Tümü'})]+
-                                         [html.Button(s,className='pill',n_clicks=0,
-                                                      id=f'p-{i}',**{'data-sector':s}) for i,s in enumerate(SEKTORLER)],
-                                         className='pills',id='pill-wrap'),
-                                html.Div('',id='h-cnt',className='stock-badge'),
-                                html.Div(id='h-list',className='stock-list'),
-                               ],className='panel-body')],className='panel'),
-            # Portföy
-            html.Div([html.Div([html.Span('💼 Portföy (maks 15)',className='panel-title')],className='panel-header'),
-                      html.Div([html.Div([html.Span('Hisse seçilmedi',className='empty')],id='chips',className='chips'),
-                                html.Div(id='w-bolum',style={'display':'none'},
-                                         children=[html.Div([html.Span('Ağırlıklar (%)',className='weight-label'),
-                                                             html.Button('⚖ Eşit',id='esit-btn',n_clicks=0,className='eq-btn')],
-                                                            className='weight-header'),
-                                                   html.Div(id='w-sliders'),
-                                                   html.Div('Toplam: %100',id='w-toplam',className='weight-total ok')])],
-                               className='panel-body')],className='panel'),
-            # Parametreler
-            html.Div([html.Div([html.Span('⚙️ Parametreler',className='panel-title')],className='panel-header'),
-                      html.Div([
-                          html.Div([html.Div([html.Span('Portföy Değeri (₺)'),html.Span('1.000.000 ₺',id='pv-l',className='param-val')],className='param-label'),
-                                    dcc.Slider(id='pv',min=100_000,max=10_000_000,step=100_000,value=1_000_000,marks=None,tooltip={'always_visible':False})],className='param-row'),
-                          html.Div([html.Div([html.Span('Güven Seviyesi'),html.Span('%99',id='ci-l',className='param-val')],className='param-label'),
-                                    dcc.Slider(id='ci',min=90,max=99,step=1,value=99,marks=None,tooltip={'always_visible':False})],className='param-row'),
-                          html.Div([html.Div([html.Span('Zaman Ufku'),html.Span('1 Gün',id='hz-l',className='param-val')],className='param-label'),
-                                    dcc.Slider(id='hz',min=1,max=30,step=1,value=1,marks=None,tooltip={'always_visible':False})],className='param-row'),
-                          html.Div([html.Div([html.Span('Monte Carlo'),html.Span('10.000',id='mc-l',className='param-val')],className='param-label'),
-                                    dcc.Slider(id='mc',min=1000,max=50_000,step=1000,value=10_000,marks=None,tooltip={'always_visible':False})],className='param-row'),
-                          html.Div([html.Div('Veri Dönemi',className='param-label'),
-                                    dcc.Dropdown(id='donem',options=[{'label':'6 Ay','value':'6mo'},{'label':'1 Yıl','value':'1y'},{'label':'2 Yıl','value':'2y'}],
-                                                 value='1y',clearable=False,className='dark-dd')],className='param-row'),
-                          html.Div([html.Div('Optimizasyon',className='param-label'),
-                                    dcc.Dropdown(id='opt',options=[{'label':'Maks Sharpe','value':'sharpe'},{'label':'Min Volatilite','value':'minvol'}],
-                                                 value='sharpe',clearable=False,className='dark-dd')],className='param-row'),
-                      ],className='panel-body')],className='panel'),
-        ],className='sidebar'),
+            # 1. Hisse Seçimi
+            html.Div("1. HİSSE SEÇİMİ", className='panel-title'),
+            dcc.Dropdown(
+                id='sector-filter',
+                options=([{'label': 'Tümü', 'value': 'Tümü'}] +
+                         [{'label': s, 'value': s} for s in SEKTORLER]),
+                value='Tümü', clearable=False,
+                style={'color': '#000', 'marginBottom': '8px',
+                       'fontSize': '11px', 'fontFamily': 'IBM Plex Mono'},
+            ),
+            dcc.Input(id='srch', type='text',
+                      placeholder='Ara: THYAO, GARAN…',
+                      className='search-box', debounce=True),
+            html.Div(id='stock-list',
+                     style={'maxHeight': '200px', 'overflowY': 'auto',
+                            'marginBottom': '10px'}),
+            # Seçili hisseler chip
+            html.Div(id='chips-area', className='chips'),
 
-        # ANA İÇERİK
-        html.Div([html.Div(id='sonuc'),
-                  dcc.Store(id='s-sel',data=[]),
-                  dcc.Store(id='s-w',  data={}),
-                  dcc.Store(id='s-sek',data='Tümü'),
-                  dcc.Store(id='s-res',data={}),
-                 ],className='content'),
-    ],className='main-grid'),
-],className='app-wrap')
+            # 2. Ağırlık Ayarı
+            html.Div("2. PORTFÖY TUTARLARI", className='panel-title',
+                     style={'marginTop': '15px'}),
+            html.Button('⚖ Tutar & Ağırlık Ayarla',
+                        id='btn-open-modal', className='btn-outline'),
 
-# ── Slider etiketleri ─────────────────────────────────────────
-@app.callback(Output('pv-l','children'),Input('pv','value'))
-def f1(v): return f'{v:,.0f} ₺'.replace(',','.')
-@app.callback(Output('ci-l','children'),Input('ci','value'))
-def f2(v): return f'%{v}'
-@app.callback(Output('hz-l','children'),Input('hz','value'))
-def f3(v): return f'{v} Gün'
-@app.callback(Output('mc-l','children'),Input('mc','value'))
-def f4(v): return f'{v:,.0f}'.replace(',','.')
+            # Toplam portföy değeri
+            html.Div([
+                html.Span('Portföy Değeri:', style={'color': 'var(--muted)'}),
+                html.Span('0 ₺', id='val-pv',
+                           style={'color': 'var(--amber)', 'fontWeight': 'bold',
+                                  'fontSize': '14px'}),
+            ], className='param-row',
+               style={'marginTop': '10px', 'borderTop': '1px solid var(--border)',
+                      'paddingTop': '10px'}),
 
-# ── Aktif sektör ──────────────────────────────────────────────
-@app.callback(Output('s-sek','data'),
-              [Input('p-tumu','n_clicks')]+[Input(f'p-{i}','n_clicks') for i in range(len(SEKTORLER))],
-              prevent_initial_call=True)
-def sek(*args):
-    ctx = dash.callback_context
-    if not ctx.triggered: return 'Tümü'
-    bid = ctx.triggered[0]['prop_id'].split('.')[0]
-    if bid=='p-tumu': return 'Tümü'
-    try:
-        idx = int(bid.split('-')[1])
-        return SEKTORLER[idx]
-    except: return 'Tümü'
+            # 3. Risk Parametreleri
+            html.Div("3. RİSK PARAMETRELERİ", className='panel-title',
+                     style={'marginTop': '15px'}),
+            html.Div([html.Span('Güven Seviyesi'),
+                      html.Span('%99', id='val-ci',
+                                style={'color': '#fff', 'fontWeight': 'bold'})],
+                     className='param-row'),
+            dcc.Slider(id='ci', min=0.90, max=0.99, step=0.01, value=0.99,
+                       marks={0.90: {'label': '%90', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              0.95: {'label': '%95', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              0.99: {'label': '%99', 'style': {'color': '#fff', 'fontSize': '10px'}}}),
+            html.Div([html.Span('Zaman Ufku'),
+                      html.Span('10 Gün', id='val-hz',
+                                style={'color': '#fff', 'fontWeight': 'bold'})],
+                     className='param-row', style={'marginTop': '12px'}),
+            dcc.Slider(id='hz', min=1, max=252, step=1, value=10,
+                       marks={1: {'label': '1', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              63: {'label': '3A', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              126: {'label': '6A', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              252: {'label': '1Y', 'style': {'color': '#fff', 'fontSize': '10px'}}}),
+            html.Div('Veri Dönemi', className='param-row',
+                     style={'color': 'var(--muted)', 'marginTop': '12px'}),
+            dcc.Dropdown(
+                id='donem',
+                options=[{'label': '6 Ay', 'value': '6mo'},
+                         {'label': '1 Yıl', 'value': '1y'},
+                         {'label': '2 Yıl', 'value': '2y'}],
+                value='1y', clearable=False,
+                style={'color': '#000', 'fontSize': '11px', 'fontFamily': 'IBM Plex Mono'},
+            ),
 
-# ── Hisse listesi ─────────────────────────────────────────────
-@app.callback(Output('h-list','children'),Output('h-cnt','children'),
-              Input('srch','value'),Input('s-sel','data'),Input('s-sek','data'))
-def hlist(ara,sel,sek):
-    q=( ara or '').lower(); s=sek or 'Tümü'; sel=sel or []
-    fil=[(k,v) for k,v in BIST100.items() if (s=='Tümü' or v[1]==s) and (q in k.lower() or q in v[0].lower())]
-    items=[]
-    for k,v in fil:
-        on=k in sel; fb=FALLBACK.get(k,{}); chg=fb.get('change',0)
-        cc=SUCCESS if chg>=0 else DANGER
-        items.append(html.Div([
-            html.Div([html.Div(k,className='stock-code'),html.Div(v[0],className='stock-name')]),
-            html.Div([html.Div([html.Div(f"{'+' if chg>=0 else ''}{chg:.2f}%",style={'color':cc,'fontFamily':'IBM Plex Mono','fontSize':'11px'}),
-                                html.Div(f"β{fb.get('beta',1.0):.2f}",style={'color':MUTED,'fontSize':'9px'})],style={'textAlign':'right'}),
-                      html.Div('✓' if on else '',className=f"stock-check {'checked' if on else ''}")],
-                     style={'display':'flex','alignItems':'center','gap':'6px'})],
-            className=f"stock-item {'selected' if on else ''}",
-            id={'type':'si','index':k},n_clicks=0,style={'cursor':'pointer'}))
-    return items, f'{len(fil)} hisse'
+            # 4. Monte Carlo
+            html.Div("4. MONTE CARLO", className='panel-title', style={'marginTop': '15px'}),
+            html.Div([html.Span('Simülasyon'),
+                      html.Span('10,000', id='val-mc',
+                                style={'color': '#fff', 'fontWeight': 'bold'})],
+                     className='param-row'),
+            dcc.Slider(id='mc', min=1000, max=50000, step=1000, value=10000,
+                       marks={1000:  {'label': '1k',  'style': {'color': '#fff', 'fontSize': '10px'}},
+                              10000: {'label': '10k', 'style': {'color': '#fff', 'fontSize': '10px'}},
+                              50000: {'label': '50k', 'style': {'color': '#fff', 'fontSize': '10px'}}}),
 
-# ── Hisse toggle ──────────────────────────────────────────────
-@app.callback(Output('s-sel','data'),Output('s-w','data'),
-              Input({'type':'si','index':ALL},'n_clicks'),
-              State({'type':'si','index':ALL},'id'),
-              State('s-sel','data'),State('s-w','data'),prevent_initial_call=True)
-def tog(clicks,ids,sel,ws):
-    ctx=dash.callback_context
-    if not ctx.triggered or not any(c for c in (clicks or [])): return sel or [],ws or {}
-    k=json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
-    sel=list(sel or []); ws=dict(ws or {})
-    if k in sel: sel.remove(k); ws.pop(k,None)
-    else:
-        if len(sel)>=15: return sel,ws
-        sel.append(k)
-    eq = round(100/len(sel), 1) if sel else 0
-    for x in sel:
-        if x not in ws:
-            ws[x] = eq
-    return sel, ws
+            # ANALİZ BUTONU
+            html.Button('▶ ANALİZ BAŞLAT',
+                        id='run-btn', className='run-btn',
+                        n_clicks=0, disabled=True),
+        ], className='panel'),
 
-# ── Chips + sliderlar ─────────────────────────────────────────
+        # ── SAĞ İÇERİK ──────────────────────────────────
+        html.Div(id='dashboard-content',
+                 children=[html.Div(
+                     "Sol panelden hisse seçin, tutarları girin, ardından "
+                     "ANALİZ BAŞLAT'a tıklayın.",
+                     style={'padding': '30px', 'color': 'var(--amber)',
+                            'fontFamily': 'IBM Plex Mono', 'textAlign': 'center'})]),
+    ], className='main-grid'),
+
+    # ── MODAL ───────────────────────────────────────────
+    html.Div([
+        html.Div([
+            html.Div("PORTFÖY BİLEŞEN TUTARLARI", className='panel-title',
+                     style={'color': 'var(--amber)'}),
+            html.Div(id='modal-sliders',
+                     style={'maxHeight': '380px', 'overflowY': 'auto',
+                            'paddingRight': '10px'}),
+            html.Div(id='modal-total',
+                     style={'color': '#fff', 'fontWeight': 'bold', 'fontSize': '14px',
+                            'marginTop': '12px', 'borderTop': '1px solid var(--border)',
+                            'paddingTop': '12px', 'textAlign': 'right'}),
+            html.Button('KAYDET VE KAPAT',
+                        id='btn-close-modal', className='run-btn', n_clicks=0),
+        ], className='modal-content'),
+    ], id='weight-modal', className='modal-overlay'),
+
+    # ── STORE ────────────────────────────────────────────
+    dcc.Store(id='store-selected', data=[]),
+    dcc.Store(id='store-amounts',  data={}),
+    dcc.Store(id='modal-open',     data=False),
+])
+
+
+# ════════════════════════════════════════════════════════
+# 6. CALLBACK'LER
+# ════════════════════════════════════════════════════════
+
+# Slider etiketleri
+@app.callback(Output('val-ci', 'children'), Input('ci', 'value'))
+def lbl_ci(v): return f'%{int(v * 100)}' if v else '—'
+
+@app.callback(Output('val-hz', 'children'), Input('hz', 'value'))
+def lbl_hz(v): return f'{v} Gün' if v else '—'
+
+@app.callback(Output('val-mc', 'children'), Input('mc', 'value'))
+def lbl_mc(v): return f'{v:,.0f}' if v else '—'
+
+
+# Hisse listesi
 @app.callback(
-    Output('chips','children'),Output('w-bolum','style'),Output('w-sliders','children'),
-    Output('w-toplam','children'),Output('w-toplam','className'),
-    Output('sel-cnt','children'),Output('run','disabled'),
-    Input('s-sel','data'),Input('s-w','data'))
-def port_ui(sel,ws):
-    sel=sel or []; ws=ws or {}
-    if not sel:
-        return ([html.Span('Hisse seçilmedi',className='empty')],
-                {'display':'none'},[],'',' weight-total','0/15',True)
-    chips=[html.Div([k,html.Span('✕',className='chip-x',id={'type':'cx','index':k},n_clicks=0)],className='chip') for k in sel]
-    sliders=[]
-    for k in sel:
-        val=ws.get(k,round(100/len(sel),1))
-        sliders.append(html.Div([
-            html.Span(k,className='weight-code'),
-            dcc.Slider(id={'type':'wsl','index':k},min=0,max=100,step=0.5,value=val,marks=None,tooltip={'always_visible':False},className='weight-slider'),
-            html.Span(f'{val:.1f}%',className='weight-val',id={'type':'wv','index':k}),
-        ],className='weight-row'))
-    t=sum(ws.get(k,0) for k in sel); ok=abs(t-100)<0.6
-    return (chips,{'display':'block'},sliders,
-            f"Toplam: %{t:.1f} {'✓' if ok else '→ 100 olmalı'}",
-            'weight-total ok' if ok else 'weight-total err',
-            f'{len(sel)}/15',False)
+    Output('stock-list', 'children'),
+    Input('srch', 'value'),
+    Input('sector-filter', 'value'),
+    Input('store-selected', 'data'),
+)
+def update_list(q, sector, selected):
+    q = (q or '').upper()
+    selected = selected or []
+    items = []
+    for ticker, info in BIST100.items():
+        if sector != 'Tümü' and info[1] != sector:
+            continue
+        if q and q not in ticker and q not in info[0].upper():
+            continue
+        is_sel = ticker in selected
+        fb = FALLBACK.get(ticker, {})
+        chg = fb.get('change', 0)
+        chg_color = 'var(--green)' if chg >= 0 else 'var(--red)'
+        items.append(html.Div([
+            html.Div([
+                html.Div(ticker, className='stock-code'),
+                html.Div(info[0], className='stock-name'),
+            ]),
+            html.Div([
+                html.Div(f"{'+' if chg >= 0 else ''}{chg:.2f}%",
+                         style={'color': chg_color, 'fontSize': '10px'}),
+                html.Div('✓' if is_sel else '',
+                         style={'color': 'var(--amber)', 'fontWeight': 'bold',
+                                'marginLeft': '6px'}),
+            ], style={'display': 'flex', 'alignItems': 'center'}),
+        ], className=f"stock-item {'selected' if is_sel else ''}",
+           id={'type': 'stock-click', 'index': ticker},
+           n_clicks=0))
+    return items
 
-# ── Ağırlık slider → store ────────────────────────────────────
-@app.callback(Output('s-w','data',allow_duplicate=True),
-              Input({'type':'wsl','index':ALL},'value'),
-              State({'type':'wsl','index':ALL},'id'),prevent_initial_call=True)
-def w_up(vals,ids):
-    if not ids: return {}
-    return {ids[i]['index']:vals[i] for i in range(len(ids))}
 
-# ── Eşit ──────────────────────────────────────────────────────
-@app.callback(Output('s-w','data',allow_duplicate=True),
-              Input('esit-btn','n_clicks'),State('s-sel','data'),prevent_initial_call=True)
-def esit(n,sel):
-    if not sel: return {}
-    eq=round(100/len(sel),1)
-    return {k:eq for k in sel}
+# Hisse toggle (seç/kaldır)
+@app.callback(
+    Output('store-selected', 'data'),
+    Output('store-amounts', 'data', allow_duplicate=True),
+    Input({'type': 'stock-click', 'index': ALL}, 'n_clicks'),
+    State({'type': 'stock-click', 'index': ALL}, 'id'),
+    State('store-selected', 'data'),
+    State('store-amounts', 'data'),
+    prevent_initial_call=True,
+)
+def toggle_stock(clicks, ids, selected, amounts):
+    if not ctx.triggered or not any(c for c in (clicks or [])):
+        return no_update, no_update
+    ticker = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
+    selected = list(selected or [])
+    amounts  = dict(amounts  or {})
+    if ticker in selected:
+        selected.remove(ticker)
+        amounts.pop(ticker, None)
+    elif len(selected) < 15:
+        selected.append(ticker)
+        amounts[ticker] = 0
+    return selected, amounts
 
-# ── Chip sil ──────────────────────────────────────────────────
-@app.callback(Output('s-sel','data',allow_duplicate=True),
-              Input({'type':'cx','index':ALL},'n_clicks'),
-              State({'type':'cx','index':ALL},'id'),State('s-sel','data'),prevent_initial_call=True)
-def cx_sil(clicks,ids,sel):
-    ctx=dash.callback_context
-    if not ctx.triggered or not any(c for c in (clicks or [])): return sel or []
-    k=json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
-    return [x for x in (sel or []) if x!=k]
 
-# ── ANALİZ ────────────────────────────────────────────────────
-@app.callback(Output('sonuc','children'),
-              Input('s-sel','data'),
-              Input('s-w','data'),
-              State('pv','value'),State('ci','value'),State('hz','value'),
-              State('mc','value'),State('donem','value'),State('opt','value'),
-              prevent_initial_call=True)
-def analiz(sel,ws,pv,ci,hz,mc_n,donem,opt_metot):
-    if not sel or len(sel)<2: return html.Div('En az 2 hisse seçin.',style={'color':'#718096','fontFamily':'IBM Plex Mono','padding':'2rem','textAlign':'center'})
-    h=sel[:15]; guven=ci/100
-    w_raw=[ws.get(k,100/len(h)) for k in h]
-    R=hesapla(h,w_raw,pv,guven,hz,mc_n,donem,opt_metot)
-    w=R['w']; meta=R['meta']; sen=R['sen']; garch=R['garch']; opt=R['opt']
-    vp=R['vp']; vc=DANGER if vp>5 else WARNING if vp>2 else SUCCESS
-    rl='🔴 YÜKSEK' if vp>5 else '🟡 ORTA' if vp>2 else '🟢 DÜŞÜK'
-
-    # Grafikler
-    mu,sig=R['p_mu'],R['p_sig']
-    x=np.linspace(mu-4.2*sig,mu+4.2*sig,400)
-    vx=mu+norm.ppf(1-guven)*sig
-    f1=go.Figure()
-    f1.add_trace(go.Scatter(x=x[x<=vx]*100,y=norm.pdf(x[x<=vx],mu,sig)/100,fill='tozeroy',fillcolor='rgba(252,129,129,0.4)',line=dict(color='rgba(0,0,0,0)'),name='Kayıp'))
-    f1.add_trace(go.Scatter(x=x[x>vx]*100,y=norm.pdf(x[x>vx],mu,sig)/100,fill='tozeroy',fillcolor='rgba(99,179,237,0.2)',line=dict(color='rgba(0,0,0,0)'),name='Güvenli'))
-    f1.add_trace(go.Scatter(x=x*100,y=norm.pdf(x,mu,sig)/100,line=dict(color=ACCENT,width=2.5),showlegend=False))
-    f1.add_vline(x=vx*100,line=dict(color=DANGER,width=2,dash='dash'),annotation_text=f'VaR %{vp:.2f}',annotation_font_color=DANGER)
-    f1.update_layout(**PL,title=f'Getiri Dağılımı  μ={mu*100:.4f}%  σ={sig*100:.4f}%',xaxis_title='Günlük Getiri (%)',yaxis_title='Olasılık Yoğunluğu')
-
-    pl=np.array(R['pl_s']); ve=-R['mc_var']
-    f2=go.Figure()
-    f2.add_trace(go.Histogram(x=pl[pl<ve]/1e3,nbinsx=30,marker_color=DANGER,opacity=0.7,name='Kayıp'))
-    f2.add_trace(go.Histogram(x=pl[pl>=ve]/1e3,nbinsx=30,marker_color=ACCENT,opacity=0.5,name='Kar'))
-    f2.add_vline(x=ve/1e3,line=dict(color=DANGER,width=2,dash='dash'),annotation_text=f'MC VaR {ftl(R["mc_var"])}',annotation_font_color=DANGER)
-    f2.update_layout(**PL,barmode='overlay',title=f'Monte Carlo P&L — {mc_n:,} Simülasyon',xaxis_title='P&L (Bin ₺)',yaxis_title='Simülasyon Sayısı')
-
-    f3a=go.Figure(go.Pie(labels=h,values=[round(w[i]*100,1) for i in range(len(h))],hole=0.60,
-        marker=dict(colors=COLORS[:len(h)],line=dict(color=BG,width=2))))
-    f3a.update_layout(**PL,title='Portföy Ağırlıkları',annotations=[dict(text='Portföy',x=0.5,y=0.5,font_size=13,showarrow=False,font_color=TEXT)])
-
-    mu_v=np.array([meta[k]['mu'] for k in h]); sig_v=np.array([meta[k]['sigma'] for k in h])
-    vols=[sig_v[i]*np.sqrt(252)*100 for i in range(len(h))]
-    f3b=go.Figure(go.Bar(x=h,y=vols,marker_color=[DANGER if v>40 else WARNING if v>25 else SUCCESS for v in vols],
-        text=[f'%{v:.1f}' for v in vols],textposition='outside'))
-    f3b.update_layout(**PL,showlegend=False,title='Yıllık Volatilite',yaxis_title='%')
-
-    f4=go.Figure()
-    for i,k in enumerate(h[:8]):
-        kap=meta[k].get('closes',[])
-        if kap:
-            arr=np.array(kap)/kap[0]*100
-            f4.add_trace(go.Scatter(y=arr.tolist(),name=k,line=dict(color=COLORS[i%len(COLORS)],width=1.8)))
-    f4.add_hline(y=100,line=dict(color=MUTED,width=1,dash='dot'))
-    f4.update_layout(**PL,title=f'Normalize Fiyat — {donem}',xaxis_title='Gün',yaxis_title='Endeks (Baz=100)')
-
-    cv=R['corr'].values
-    f5=go.Figure(go.Heatmap(z=cv,x=h,y=h,colorscale='RdYlGn',zmin=-1,zmax=1,
-        text=[[f'{cv[i][j]:.2f}' for j in range(len(h))] for i in range(len(h))],
-        texttemplate='%{text}',textfont={'size':9},colorbar=dict(title='ρ',tickfont=dict(color=TEXT))))
-    f5.update_layout(**PL,title='Korelasyon Matrisi')
-
-    f6=go.Figure()
-    if garch.get('dates'):
-        f6.add_trace(go.Scatter(x=garch['dates'],y=[v*100 for v in garch['cond_vol']],line=dict(color=PURPLE,width=1.5),name='Koşullu Volatilite'))
-        f6.update_layout(**PL,title=f'GARCH(1,1) — {h[0]}',xaxis_title='Tarih',yaxis_title='Günlük Vol (%)')
-    else:
-        f6.add_annotation(text='GARCH için yfinance verisi gerekli',x=0.5,y=0.5,showarrow=False,font=dict(color=MUTED,size=13))
-        f6.update_layout(**PL,title='GARCH(1,1)')
-
-    f7=go.Figure()
-    if opt.get('w'):
-        lb=list(opt['w'].keys()); ov=[opt['w'][k]*100 for k in lb]
-        cv2=[w[h.index(k)]*100 if k in h else 0 for k in lb]
-        f7.add_trace(go.Bar(name='Mevcut',x=lb,y=cv2,marker_color=ACCENT))
-        f7.add_trace(go.Bar(name='Optimal',x=lb,y=ov,marker_color=SUCCESS))
-        f7.update_layout(**PL,barmode='group',title=f'Optimizasyon ({opt_metot}) — Sharpe: {opt.get("sharpe","?")}',yaxis_title='%')
-    else:
-        f7.add_annotation(text='Optimizasyon için yfinance verisi gerekli',x=0.5,y=0.5,showarrow=False,font=dict(color=MUTED,size=13))
-        f7.update_layout(**PL,title='Portföy Optimizasyonu')
-
-    return html.Div([
-        # Metrik kartlar
+# Chip'ler
+@app.callback(
+    Output('chips-area', 'children'),
+    Output('run-btn', 'disabled'),
+    Input('store-selected', 'data'),
+    Input('store-amounts', 'data'),
+)
+def update_chips(selected, amounts):
+    selected = selected or []
+    amounts  = amounts  or {}
+    chips = [
         html.Div([
-            krt(f'Parametrik VaR {ci}%·{hz}G',ftl(R['d_var']),f'{vp:.2f}% portföy · {rl}',vc,'red'),
-            krt('CVaR / Beklenen Kayıp',ftl(R['cvar']),'VaR aşımı ort. kaybı',WARNING,'yellow'),
-            krt('Monte Carlo VaR',ftl(R['mc_var']),f"{mc_n:,} simülasyon",ACCENT,'blue'),
-            krt('Sharpe Oranı',f"{R['sharpe']:.3f}",f"Vol:%{R['yillik_vol']:.1f} G:%{R['yillik_mu']:.1f}",SUCCESS,'green'),
-            krt('Portföy Beta',f"{R['p_beta']:.3f}",f"μ={mu*100:.4f}% σ={sig*100:.4f}%",PURPLE,'purple'),
-        ],className='metrics-grid'),
+            ticker,
+            html.Span('✕', className='chip-x',
+                      id={'type': 'chip-rm', 'index': ticker}, n_clicks=0),
+        ], className='chip') for ticker in selected
+    ]
+    total = sum(amounts.values())
+    disabled = len(selected) < 1 or total <= 0
+    return chips, disabled
 
-        html.Div('⚠️ Portföy yüksek risk taşıyor.',className='alert alert-danger') if vp>5 else html.Div(),
 
-        # Sekmeler
-        html.Div([dcc.Tabs(id='tabs',value='t1',className='custom-tabs',children=[
-            dcc.Tab(label='📊 Dağılım',     value='t1',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='🎲 Monte Carlo', value='t2',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='💼 Portföy',     value='t3',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='📈 Fiyat',       value='t4',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='🔗 Korelasyon',  value='t5',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='📉 GARCH',       value='t6',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='⚡ Optimizasyon',value='t7',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='🔮 Senaryo',     value='t8',className='tab',selected_className='tab-active'),
-            dcc.Tab(label='📋 Detay',       value='t9',className='tab',selected_className='tab-active'),
-        ]),
-        html.Div(id='tab-ic'),
-        dcc.Store(id='figs',data={
-            't1':f1.to_json(),'t2':f2.to_json(),'t3a':f3a.to_json(),
-            't3b':f3b.to_json(),'t4':f4.to_json(),'t5':f5.to_json(),
-            't6':f6.to_json(),'t7':f7.to_json(),
-            'sen':sen,'katki':R['katki'],
-            'p':{'z':R['z'],'p_mu':mu,'p_sig':sig,'vp':vp},
-            'mc_meta':{'v':R['mc_var'],'k':R['mc_kotu'],'m':R['mc_medyan']},
-            'garch':garch,'opt':opt,
-            'guven':guven,'hz':hz,'mc_n':mc_n,
-        }),
-        ],className='panel',style={'padding':'1.2rem'}),
+# Chip'ten sil
+@app.callback(
+    Output('store-selected', 'data', allow_duplicate=True),
+    Input({'type': 'chip-rm', 'index': ALL}, 'n_clicks'),
+    State({'type': 'chip-rm', 'index': ALL}, 'id'),
+    State('store-selected', 'data'),
+    prevent_initial_call=True,
+)
+def remove_chip(clicks, ids, selected):
+    if not ctx.triggered or not any(c for c in (clicks or [])):
+        return no_update
+    ticker = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
+    return [x for x in (selected or []) if x != ticker]
+
+
+# Modal aç/kapat + slider içeriği
+@app.callback(
+    Output('weight-modal', 'className'),
+    Output('modal-sliders', 'children'),
+    Input('btn-open-modal', 'n_clicks'),
+    Input('btn-close-modal', 'n_clicks'),
+    State('store-selected', 'data'),
+    State('store-amounts', 'data'),
+    prevent_initial_call=True,
+)
+def handle_modal(open_n, close_n, selected, amounts):
+    selected = selected or []
+    amounts  = amounts  or {}
+    trigger  = ctx.triggered_id
+    is_open  = (trigger == 'btn-open-modal')
+
+    rows = []
+    for t in selected:
+        rows.append(html.Div([
+            html.Div(t, style={'color': '#fff', 'fontWeight': 'bold',
+                               'width': '75px', 'fontSize': '13px'}),
+            dcc.Input(
+                type='number',
+                id={'type': 'amt-input', 'index': t},
+                value=amounts.get(t, 0),
+                min=0, step=1000,
+                placeholder='0',
+                className='search-box',
+                style={'width': '170px', 'marginBottom': '0',
+                       'marginRight': '12px', 'textAlign': 'right',
+                       'fontSize': '13px'},
+            ),
+            html.Div(id={'type': 'w-pct', 'index': t},
+                     style={'color': 'var(--amber)', 'fontWeight': 'bold',
+                            'width': '55px', 'textAlign': 'right'}),
+        ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '10px'}))
+
+    return ('modal-overlay open' if is_open else 'modal-overlay'), rows
+
+
+# Tutar inputları → store + yüzde güncelle
+@app.callback(
+    Output('store-amounts', 'data', allow_duplicate=True),
+    Output({'type': 'w-pct', 'index': ALL}, 'children'),
+    Input({'type': 'amt-input', 'index': ALL}, 'value'),
+    State({'type': 'amt-input', 'index': ALL}, 'id'),
+    State('store-amounts', 'data'),
+    prevent_initial_call=True,
+)
+def sync_amounts(vals, ids, amounts):
+    amounts = dict(amounts or {})
+    for i, val in enumerate(vals):
+        amounts[ids[i]['index']] = val or 0
+    total = sum(amounts.values())
+    pcts = []
+    for val in vals:
+        v = val or 0
+        pcts.append(f'%{v / total * 100:.1f}' if total > 0 else '%0.0')
+    return amounts, pcts
+
+
+# Toplam portföy değeri etiketi
+@app.callback(
+    Output('val-pv', 'children'),
+    Output('modal-total', 'children'),
+    Input('store-amounts', 'data'),
+)
+def update_pv(amounts):
+    total = sum((amounts or {}).values())
+    return f'{total:,.0f} ₺', f'Toplam: {total:,.0f} ₺'
+
+
+# ── ANA ANALİZ CALLBACK (sadece butonla tetiklenir) ──────────────
+@app.callback(
+    Output('dashboard-content', 'children'),
+    Input('run-btn', 'n_clicks'),
+    State('store-selected', 'data'),
+    State('store-amounts', 'data'),
+    State('ci', 'value'),
+    State('hz', 'value'),
+    State('mc', 'value'),
+    State('donem', 'value'),
+    prevent_initial_call=True,
+)
+def run_dashboard(n_clicks, selected, amounts, ci, hz, mc_n, donem):
+    selected = selected or []
+    amounts  = amounts  or {}
+    total_pv = sum(amounts.values())
+
+    if not selected:
+        return html.Div("En az 1 hisse seçin.",
+                        style={'padding': '20px', 'color': 'var(--amber)'})
+    if total_pv <= 0:
+        return html.Div("Hisse tutarlarını giriniz (Tutar & Ağırlık Ayarla).",
+                        style={'color': 'var(--red)', 'padding': '20px'})
+
+    weights = {k: (v / total_pv * 100) for k, v in amounts.items() if k in selected}
+
+    # Risk hesaplama
+    R = run_analysis(selected, weights, total_pv, ci, hz, mc_n, donem)
+
+    mu, sig, z = R['p_mu'], R['p_sig'], R['z']
+    vp = R['vp']
+    vp_label = '🔴 YÜKSEK' if vp > 5 else ('🟡 ORTA' if vp > 2 else '🟢 DÜŞÜK')
+
+    # ── Metrik kartlar ────────────────────────────────────────
+    def krt(label, val, sub, cls=''):
+        return html.Div([
+            html.Div(label, className='metric-label'),
+            html.Div(val,   className=f'metric-val {cls}'),
+            html.Div(sub,   className='metric-sub'),
+        ], className=f'metric-card {cls.replace("val-","")}-top')
+
+    summary = html.Div([
+        krt(f'Parametrik VaR (%{ci*100:.0f} · {hz}G)',
+            ftl(R['var']),
+            f'Portföy Riski: %{vp:.2f} | {vp_label}', 'val-red'),
+        krt('Monte Carlo VaR',
+            ftl(R['mc_var']),
+            f'{mc_n:,} simülasyon', 'val-amber'),
+        krt('CVaR / Beklenen Kayıp',
+            ftl(R['cvar']),
+            'VaR aşımı ort. kaybı', 'val-red'),
+        krt('Sharpe Oranı',
+            f"{R['sharpe']:.3f}",
+            f"Yıllık: μ=%{R['mu_annual']:.1f} σ=%{R['sig_annual']:.1f}", 'val-blue'),
+    ], className='metric-grid')
+
+    # ── Grafik yardımcısı ─────────────────────────────────────
+    def G(fig, h=320):
+        return dcc.Graph(
+            figure=fig,
+            config={'displayModeBar': True, 'displaylogo': False},
+            style={'height': f'{h}px'},
+        )
+
+    # ── T1: Dağılım ───────────────────────────────────────────
+    x_all = np.linspace(mu - 4.2 * sig, mu + 4.2 * sig, 400)
+    vx    = mu - z * sig          # VaR eşiği getiri ekseninde (sol kuyruk)
+    f1 = go.Figure()
+    f1.add_trace(go.Scatter(
+        x=x_all[x_all <= vx] * 100,
+        y=norm.pdf(x_all[x_all <= vx], mu, sig) / 100,
+        fill='tozeroy', fillcolor='rgba(230,57,70,.35)',
+        line=dict(color='rgba(0,0,0,0)'), name='Kayıp Kuyruğu'))
+    f1.add_trace(go.Scatter(
+        x=x_all[x_all > vx] * 100,
+        y=norm.pdf(x_all[x_all > vx], mu, sig) / 100,
+        fill='tozeroy', fillcolor='rgba(47,116,208,.15)',
+        line=dict(color='rgba(0,0,0,0)'), name='Güvenli Bölge'))
+    f1.add_trace(go.Scatter(
+        x=x_all * 100, y=norm.pdf(x_all, mu, sig) / 100,
+        line=dict(color='#FF9900', width=2), showlegend=False))
+    f1.add_vline(
+        x=vx * 100,
+        line=dict(color='#E63946', width=2, dash='dash'),
+        annotation_text=f'VaR %{vp:.2f}',
+        annotation_font_color='#E63946')
+    f1.update_layout(**PL,
+        title=f'Parametrik Getiri Dağılımı   μ={mu*100:.4f}%   σ={sig*100:.4f}%',
+        xaxis_title='Günlük Getiri (%)', yaxis_title='Olasılık Yoğunluğu', height=320)
+
+    # ── T2: Monte Carlo ───────────────────────────────────────
+    pl_arr = np.array(R['pl_s']) / 1000
+    f2 = go.Figure()
+    f2.add_trace(go.Histogram(
+        x=pl_arr[pl_arr < -R['mc_var'] / 1000],
+        nbinsx=25, marker_color='#E63946', opacity=0.75, name='Kayıp'))
+    f2.add_trace(go.Histogram(
+        x=pl_arr[pl_arr >= -R['mc_var'] / 1000],
+        nbinsx=35, marker_color='#2F74D0', opacity=0.6, name='Kâr'))
+    f2.add_vline(
+        x=-R['mc_var'] / 1000,
+        line=dict(color='#FF9900', width=2, dash='dash'),
+        annotation_text=f"MC VaR {ftl(R['mc_var'])}",
+        annotation_font_color='#FF9900')
+    f2.update_layout(**PL, barmode='overlay',
+        title=f'Monte Carlo P&L — {mc_n:,} Simülasyon',
+        xaxis_title='Kâr/Zarar (Bin ₺)', yaxis_title='Simülasyon Frekansı', height=320)
+
+    # ── T3: Portföy pasta + volatilite çubuğu ─────────────────
+    f3a = go.Figure(go.Pie(
+        labels=selected,
+        values=[round(weights.get(k, 0), 1) for k in selected],
+        hole=0.55,
+        marker=dict(colors=COLORS[:len(selected)],
+                    line=dict(color='#000', width=2))))
+    f3a.update_layout(**PL, title='Portföy Ağırlık Dağılımı',
+        annotations=[dict(text='Portföy', x=0.5, y=0.5,
+                          font_size=13, showarrow=False,
+                          font_color='#e0e0e0')], height=300)
+
+    sig_v = np.array([R['meta'][k]['sigma'] for k in selected])
+    vols  = sig_v * np.sqrt(252) * 100
+    f3b = go.Figure(go.Bar(
+        x=selected, y=vols,
+        marker_color=['#E63946' if v > 40 else '#FF9900' if v > 25 else '#2A9D8F'
+                      for v in vols],
+        text=[f'%{v:.1f}' for v in vols], textposition='outside'))
+    f3b.update_layout(**PL, showlegend=False,
+        title='Yıllık Volatilite (σ × √252)', yaxis_title='%', height=300)
+
+    t3_content = html.Div([
+        html.Div([
+            html.Div(G(f3a, 300), style={'flex': '1'}),
+            html.Div(G(f3b, 300), style={'flex': '1'}),
+        ], style={'display': 'flex', 'gap': '12px'}),
     ])
 
-# ── Tab içeriği ───────────────────────────────────────────────
-@app.callback(Output('tab-ic','children'),Input('tabs','value'),Input('figs','data'))
-def tab_ic(t,figs):
-    if not figs: return html.Div()
-    import plotly.io as pio
-    def G(k,h=320): return dcc.Graph(figure=pio.from_json(figs[k]),
-                                      config={'displayModeBar':True,'displaylogo':False},
-                                      style={'height':f'{h}px'})
-    p=figs.get('p',{}); mm=figs.get('mc_meta',{})
-    gh=figs.get('garch',{}); op=figs.get('opt',{})
-    guven=figs.get('guven',0.99); hz=figs.get('hz',1); mc_n=figs.get('mc_n',10000)
-    sen=figs.get('sen',{})
+    # ── T4: Normalize fiyat ───────────────────────────────────
+    f4 = go.Figure()
+    for i, k in enumerate(selected[:8]):
+        closes = R['meta'][k].get('closes', [])
+        if closes:
+            arr = np.array(closes) / closes[0] * 100
+            f4.add_trace(go.Scatter(
+                y=arr.tolist(), name=k,
+                line=dict(color=COLORS[i % len(COLORS)], width=1.8)))
+    f4.add_hline(y=100, line=dict(color='#808080', width=1, dash='dot'))
+    f4.update_layout(**PL,
+        title=f'Normalize Fiyat Trendi (Baz=100) — {donem}',
+        xaxis_title='İşlem Günü', yaxis_title='Endeks', height=320)
 
-    if t=='t1': return html.Div([html.Div(f"z={p.get('z',0):.4f}  μ={p.get('p_mu',0)*100:.4f}%  σ={p.get('p_sig',0)*100:.4f}%  |  VaR=W×(μ−z·σ)×√T",className='alert alert-info'),G('t1')])
-    if t=='t2': return html.Div([html.Div(f"{mc_n:,} senaryo  En kötü: {ftl(mm.get('k',0))}  Medyan: {ftl(mm.get('m',0))}",className='alert alert-info'),G('t2')])
-    if t=='t3': return html.Div([html.Div([html.Div(G('t3a',260),style={'flex':'1'}),html.Div(G('t3b',260),style={'flex':'1'})],style={'display':'flex','gap':'1rem'})])
-    if t=='t4': return G('t4')
-    if t=='t5': return html.Div([html.Div('Gerçek getiri serisinden hesaplanan korelasyon matrisi',className='alert alert-info'),G('t5')])
-    if t=='t6':
-        if gh.get('dates') and len(gh.get('dates',[])) > 0:
-            info = (f"ω={gh.get('omega',0):.6f}  "
-                    f"α={gh.get('alpha',0):.4f}  "
-                    f"β={gh.get('beta_g',0):.4f}  "
-                    f"Tahmin Vol: %{gh.get('tahmin',0)*100:.3f}")
-        elif gh.get('hata'):
-            info = f"GARCH Hatası: {gh['hata'][:80]}"
-        else:
-            info = 'GARCH: yfinance verisi bekleniyor...'
-        return html.Div([html.Div(info,className='alert alert-info'),G('t6')])
-    if t=='t7':
-        info=(f"Getiri: %{op.get('ret','?')}  Vol: %{op.get('vol','?')}  Sharpe: {op.get('sharpe','?')}") if op.get('w') else 'Optimizasyon için yfinance verisi gerekli'
-        return html.Div([html.Div(info,className='alert alert-info'),G('t7')])
-    if t=='t8':
-        def sc(title,val,color,extra=''):
-            return html.Div([html.Div(title,className='scenario-title',style={'color':color}),
-                             html.Div(ftl(val),className='scenario-val',style={'color':color}),
-                             html.Div(extra,style={'fontSize':'10px','color':MUTED,'marginTop':'3px','fontFamily':'IBM Plex Mono'})],
-                            className='scenario-card')
-        return html.Div([html.Div(f'{hz} günlük stres test senaryoları',className='alert alert-warning'),
-                         html.Div([sc('🐂 Boğa (+2σ)',sen.get('boga',0),SUCCESS),
-                                   sc('📊 Baz',sen.get('baz',0),ACCENT),
-                                   sc('🐻 Ayı (−2σ)',sen.get('ayi',0),WARNING),
-                                   sc('💥 Kriz (−3.5σ)',sen.get('kriz',0),DANGER,f"Kayıp: {ftl(abs(sen.get('kriz',0)))}")],
-                                  className='scenario-grid')])
-    if t=='t9':
-        rows=figs.get('katki',[])
-        cols=[{'name':c,'id':c} for c in (rows[0].keys() if rows else [])]
-        return html.Div([dash_table.DataTable(data=rows,columns=cols,
-            style_table={'overflowX':'auto'},
-            style_cell={'backgroundColor':CARD,'color':TEXT,'border':f'1px solid {GRID}','fontFamily':'IBM Plex Mono','fontSize':'11px','padding':'7px 10px'},
-            style_header={'backgroundColor':PANEL,'color':MUTED,'fontWeight':'500','textTransform':'uppercase'},
-            style_data_conditional=[{'if':{'filter_query':'{Kaynak} contains "Yahoo"','column_id':'Kaynak'},'color':SUCCESS},
-                                     {'if':{'filter_query':'{Kaynak} contains "Fallback"','column_id':'Kaynak'},'color':WARNING}],
-            page_size=15),
-            html.Div(f'VaR=W×(μ−z·σ)×√T | CVaR=W×σ×φ(z)/(1−α)−W×μ | σₚ²=Σwᵢwⱼσᵢσⱼρᵢⱼ | Sharpe=(μ×252−rᶠ)/(σ×√252) | α={guven*100:.0f}%',
-                     className='formula-box')])
-    return html.Div()
+    # ── T5: Korelasyon ────────────────────────────────────────
+    cv = R['corr'].values
+    f5 = go.Figure(go.Heatmap(
+        z=cv, x=selected, y=selected,
+        colorscale='RdYlGn', zmin=-1, zmax=1,
+        text=[[f'{cv[i][j]:.2f}' for j in range(len(selected))]
+              for i in range(len(selected))],
+        texttemplate='%{text}', textfont={'size': 9},
+        colorbar=dict(title='ρ', tickfont=dict(color='#e0e0e0'))))
+    f5.update_layout(**PL, title='Getiri Korelasyon Matrisi', height=320)
 
+    # ── T6: GARCH ─────────────────────────────────────────────
+    gh = R['garch']
+    f6 = go.Figure()
+    if gh.get('error') is None and gh.get('cond_vol'):
+        dates_0  = R['meta'][selected[0]]['dates']
+        cond_pct = [v * 100 for v in gh['cond_vol']]
+        ml       = min(len(dates_0), len(cond_pct))
+        f6.add_trace(go.Scatter(
+            x=dates_0[-ml:], y=cond_pct[-ml:],
+            line=dict(color='#2A9D8F', width=1.5),
+            fill='tozeroy', fillcolor='rgba(42,157,143,.1)',
+            name='Koşullu Vol'))
+        garch_info = (f"ω={gh.get('omega',0):.6f}  "
+                      f"α={gh.get('alpha',0):.4f}  "
+                      f"β={gh.get('beta_g',0):.4f}  "
+                      f"Tahmin: %{gh.get('tahmin',0)*100:.3f}")
+        f6.update_layout(**PL,
+            title='GARCH(1,1) Portföy Koşullu Volatilitesi',
+            xaxis_title='Tarih', yaxis_title='Günlük Vol (%)', height=320)
+    else:
+        garch_info = f"GARCH: {gh.get('error', 'veri bekleniyor')}"
+        f6.add_annotation(text=garch_info, x=0.5, y=0.5, showarrow=False,
+                          font=dict(color='#E63946', size=12))
+        f6.update_layout(**PL, title='GARCH(1,1) (Hata)', height=320)
+
+    # ── T7: Senaryo ───────────────────────────────────────────
+    s = R['sen']
+    t7_content = html.Div([
+        html.Div(f'{hz} Günlük Stres Testi Senaryoları', className='alert-warn'),
+        html.Div([
+            html.Div([
+                html.Div('🐂 Boğa (+2σ)', className='scenario-title'),
+                html.Div(f"+{ftl(s['boga'])}", className='scenario-val',
+                         style={'color': 'var(--green)'}),
+                html.Div('Beklenen kâr üst sınırı', className='metric-sub'),
+            ], className='scenario-card'),
+            html.Div([
+                html.Div('📊 Baz (μ)', className='scenario-title'),
+                html.Div(ftl(abs(s['baz'])) if s['baz'] >= 0 else f"-{ftl(abs(s['baz']))}",
+                         className='scenario-val',
+                         style={'color': 'var(--blue)'}),
+                html.Div('Tarihsel ortalama projeksiyon', className='metric-sub'),
+            ], className='scenario-card'),
+            html.Div([
+                html.Div('🐻 Ayı (−2σ)', className='scenario-title'),
+                html.Div(f"-{ftl(abs(s['ayi']))}", className='scenario-val',
+                         style={'color': 'var(--amber)'}),
+                html.Div('Normal stres kaybı', className='metric-sub'),
+            ], className='scenario-card'),
+            html.Div([
+                html.Div('💥 Kriz (−3.5σ)', className='scenario-title'),
+                html.Div(f"-{ftl(abs(s['kriz']))}", className='scenario-val',
+                         style={'color': 'var(--red)'}),
+                html.Div('Sistemik kriz senaryosu', className='metric-sub'),
+            ], className='scenario-card'),
+        ], className='scenario-grid'),
+    ], style={'padding': '10px'})
+
+    # ── T8: Detay tablosu ─────────────────────────────────────
+    rows = R['katki']
+    cols = [{'name': c, 'id': c} for c in rows[0].keys()]
+    t8_content = html.Div([
+        dash_table.DataTable(
+            data=rows, columns=cols,
+            style_table={'overflowX': 'auto'},
+            style_cell={'backgroundColor': '#141414', 'color': '#e0e0e0',
+                        'border': '1px solid #262626', 'fontFamily': 'IBM Plex Mono',
+                        'fontSize': '10px', 'padding': '8px', 'textAlign': 'center'},
+            style_header={'backgroundColor': '#0d0d0d', 'color': '#808080',
+                          'fontWeight': '600', 'textTransform': 'uppercase'},
+            style_data_conditional=[
+                {'if': {'filter_query': '{Değişim %} > 0', 'column_id': 'Değişim %'},
+                 'color': '#2A9D8F', 'fontWeight': 'bold'},
+                {'if': {'filter_query': '{Değişim %} < 0', 'column_id': 'Değişim %'},
+                 'color': '#E63946', 'fontWeight': 'bold'},
+                {'if': {'column_id': 'Ağırlık %'}, 'color': '#2F74D0', 'fontWeight': 'bold'},
+                {'if': {'column_id': 'VaR Katkı ₺'}, 'color': '#FF9900', 'fontWeight': 'bold'},
+                {'if': {'column_id': 'Kod'}, 'color': '#fff', 'fontWeight': 'bold'},
+                {'if': {'filter_query': '{Kaynak} contains "Yahoo"', 'column_id': 'Kaynak'},
+                 'color': '#2A9D8F'},
+                {'if': {'filter_query': '{Kaynak} contains "Fallback"', 'column_id': 'Kaynak'},
+                 'color': '#FF9900'},
+            ],
+            page_size=15,
+        ),
+        html.Div(
+            'VaR = W×(z×σ×√T − μ×T)  |  CVaR = W×√T×σ×φ(z)/(1−α) − W×μ×T  |  '
+            f'σₚ² = Σ wᵢwⱼσᵢσⱼρᵢⱼ  |  Sharpe = (μ×252 − rᶠ)/(σ×√252)  |  '
+            f'α={ci*100:.0f}%  z={z:.4f}  rᶠ={RF_ANNUAL*100:.0f}%',
+            className='formula-box',
+        ),
+    ], style={'padding': '5px'})
+
+    # ── Sekmeler ──────────────────────────────────────────────
+    tabs = dcc.Tabs(
+        id='sub-tabs', value='t1', className='custom-tabs',
+        children=[
+            dcc.Tab(label='📊 DAĞILIM', value='t1',
+                    className='tab', selected_className='tab-active',
+                    children=[
+                        html.Div(
+                            f"z={z:.4f}  μ={mu*100:.4f}%  σ={sig*100:.4f}%  "
+                            f"VaR = W×(z×σ×√T − μ×T)",
+                            className='alert-box'),
+                        G(f1),
+                    ]),
+            dcc.Tab(label='🎲 MONTE CARLO', value='t2',
+                    className='tab', selected_className='tab-active',
+                    children=[
+                        html.Div(
+                            f"En Kötü: {ftl(R['mc_worst'])}  "
+                            f"Medyan: {ftl(R['mc_med'])}  "
+                            f"MC VaR: {ftl(R['mc_var'])}",
+                            className='alert-box'),
+                        G(f2),
+                    ]),
+            dcc.Tab(label='💼 PORTFÖY', value='t3',
+                    className='tab', selected_className='tab-active',
+                    children=[t3_content]),
+            dcc.Tab(label='📈 FİYAT', value='t4',
+                    className='tab', selected_className='tab-active',
+                    children=[G(f4)]),
+            dcc.Tab(label='🔗 KORELASYON', value='t5',
+                    className='tab', selected_className='tab-active',
+                    children=[
+                        html.Div('Gerçek getiri serisinden hesaplanan korelasyon matrisi',
+                                 className='alert-box'),
+                        G(f5),
+                    ]),
+            dcc.Tab(label='📉 GARCH', value='t6',
+                    className='tab', selected_className='tab-active',
+                    children=[
+                        html.Div(garch_info, className='alert-box'),
+                        G(f6),
+                    ]),
+            dcc.Tab(label='🔮 SENARYO', value='t7',
+                    className='tab', selected_className='tab-active',
+                    children=[t7_content]),
+            dcc.Tab(label='📋 DETAY', value='t8',
+                    className='tab', selected_className='tab-active',
+                    children=[t8_content]),
+        ],
+    )
+
+    return html.Div([
+        summary,
+        (html.Div('⚠ Portföy riski kritik eşiğin üzerinde (%5+).',
+                  className='alert-danger') if vp > 5 else html.Div()),
+        html.Div(tabs, className='panel', style={'padding': '12px'}),
+    ])
+
+
+# ════════════════════════════════════════════════════════
+# 7. ENTRYPOINT
+# ════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    app.run(debug=False, host='0.0.0.0', port=8050)
